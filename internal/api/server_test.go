@@ -248,3 +248,34 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestWechatVerificationFileRoute(t *testing.T) {
+	server := newTestServer(t)
+
+	staticDir := filepath.Join(filepath.Dir(server.configFilePath), "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatalf("failed to create static dir: %v", err)
+	}
+	verificationPath := filepath.Join(staticDir, wechatVerificationFileName)
+	if err := os.WriteFile(verificationPath, []byte("wechat-ok"), 0o644); err != nil {
+		t.Fatalf("failed to write verification file: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/"+wechatVerificationFileName, nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != "wechat-ok" {
+		t.Fatalf("unexpected body: got %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/static/"+wechatVerificationFileName, nil)
+	rr = httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected non-whitelisted static path to return 404, got %d", rr.Code)
+	}
+}
