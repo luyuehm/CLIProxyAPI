@@ -63,6 +63,8 @@ var corsExposedResponseHeaders = []string{
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
 
+const wechatVerificationFileName = "8c0af791cb9ee151c0dcd437b1be60aa.txt"
+
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
 	engineConfigurator   func(*gin.Engine)
@@ -436,6 +438,8 @@ func (s *Server) setupRoutes() {
 	s.engine.HEAD("/healthz", healthzHandler)
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/"+wechatVerificationFileName, s.serveRootStaticTextFile(wechatVerificationFileName))
+	s.engine.HEAD("/"+wechatVerificationFileName, s.serveRootStaticTextFile(wechatVerificationFileName))
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -915,6 +919,32 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+func (s *Server) serveRootStaticTextFile(fileName string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fileName = strings.TrimSpace(fileName)
+		if fileName == "" || filepath.Base(fileName) != fileName || !strings.HasSuffix(strings.ToLower(fileName), ".txt") {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		staticDir := managementasset.StaticDir(s.configFilePath)
+		if strings.TrimSpace(staticDir) == "" {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		filePath := filepath.Join(staticDir, fileName)
+		info, err := os.Stat(filePath)
+		if err != nil || info.IsDir() {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		c.File(filePath)
+	}
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
