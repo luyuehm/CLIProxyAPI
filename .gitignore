@@ -53,3 +53,4 @@ _bmad-output/*
 
 # local dry-run migration override
 docker-compose.dryrun.yml
+.gocache/
