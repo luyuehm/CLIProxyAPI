@@ -2299,6 +2299,67 @@
           "high"
         ]
       }
+    },
+    {
+      "id": "grok-4.20-expert",
+      "object": "model",
+      "created": 1774828800,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.20 Expert",
+      "name": "grok-4.20-expert",
+      "description": "xAI Grok 4.20 Expert model for specialized reasoning tasks.",
+      "context_length": 2000000,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "grok-4.20-fast",
+      "object": "model",
+      "created": 1774828800,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.20 Fast",
+      "name": "grok-4.20-fast",
+      "description": "xAI Grok 4.20 Fast model for high-speed inference.",
+      "context_length": 2000000,
+      "max_completion_tokens": 65536
+    },
+    {
+      "id": "grok-4.20-auto",
+      "object": "model",
+      "created": 1774828800,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.20 Auto",
+      "name": "grok-4.20-auto",
+      "description": "xAI Grok 4.20 Auto model with automatic mode selection.",
+      "context_length": 2000000,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "grok-imagine-image-lite",
+      "object": "model",
+      "created": 1774828800,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok Imagine Image Lite",
+      "name": "grok-imagine-image-lite",
+      "description": "xAI Grok Imagine image generation model (lite).",
+      "context_length": 32000
     }
   ]
 }
