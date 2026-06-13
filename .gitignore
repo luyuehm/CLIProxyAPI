@@ -12,6 +12,8 @@ logs/*
 conv/*
 temp/*
 refs/*
+plugins/*
+examples/plugin/bin/*
 
 # Storage backends
 pgstore/*
@@ -39,6 +41,7 @@ GEMINI.md
 .gemini/*
 .serena/*
 .agent/*
+.agents
 .agents/*
 .opencode/*
 .idea/*
@@ -50,7 +53,4 @@ _bmad-output/*
 # macOS
 .DS_Store
 ._*
-
-# local dry-run migration override
-docker-compose.dryrun.yml
 .gocache/
