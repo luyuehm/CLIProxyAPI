@@ -50,9 +50,17 @@ var (
 // init initializes the shared logger setup.
 func init() {
 	logging.SetupBaseLogger()
-	buildinfo.Version = Version
-	buildinfo.Commit = Commit
-	buildinfo.BuildDate = BuildDate
+	// Only override buildinfo defaults from ldflags if they are still at package defaults.
+	// ldflags inject into buildinfo package directly; this init() must not overwrite them.
+	if buildinfo.Version == "dev" {
+		buildinfo.Version = Version
+	}
+	if buildinfo.Commit == "none" {
+		buildinfo.Commit = Commit
+	}
+	if buildinfo.BuildDate == "unknown" {
+		buildinfo.BuildDate = BuildDate
+	}
 }
 
 func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode bool) bool {
