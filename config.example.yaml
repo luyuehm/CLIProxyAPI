@@ -130,6 +130,41 @@ usage-statistics-enabled: false
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
+# Cost budget alerts. When enabled, each upstream request's token usage is
+# priced against the price table and accumulated per budget period; thresholds
+# emit alerts (logged, and delivered to an Alerter when wired). Disabled by
+# default. Inspect current state with: GET /v0/management/budget
+budget:
+  enabled: false
+  # Informational currency unit for amounts and reported spend (e.g. "USD", "CNY").
+  currency: "USD"
+  # One or more spend ceilings. Each budget is evaluated independently against
+  # the same aggregated spend. Periods: monthly | quarterly | annual.
+  # WarnFraction/CriticalFraction default to 0.8 / 1.0 when <= 0.
+  budgets:
+    - period: monthly
+      amount: 100
+      warn-fraction: 0.8
+      critical-fraction: 1.0
+    # - period: quarterly
+    #   amount: 250
+    # - period: annual
+    #   amount: 1000
+  # Ordered price table. The first matching entry for a (provider, model)
+  # pair wins; empty Model/Provider fields are wildcards. List specific rates
+  # first. Rates are per 1000 tokens, in the currency unit above.
+  prices:
+    # - model: "gpt-4"
+    #   provider: "openai"
+    #   input-rate-per-1k: 2.5
+    #   output-rate-per-1k: 10.0
+    #   cache-read-rate-per-1k: 1.25
+    #   cache-write-rate-per-1k: 3.125
+    #   reasoning-rate-per-1k: 0    # 0 -> falls back to output-rate-per-1k
+    # Catch-all (no model/provider) for any unmatched request.
+    - input-rate-per-1k: 1.0
+      output-rate-per-1k: 2.0
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/costbudget"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -54,6 +55,12 @@ func (s *Service) Run(ctx context.Context) error {
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
 		redisqueue.SetUsageStatisticsEnabled(true)
+	}
+
+	// Register the cost budget tracker so usage records flow into budget
+	// accumulation. No-op when the budget config is disabled or absent.
+	if s.cfg != nil {
+		costbudget.Install(costbudget.NewTracker(s.cfg.Budget, nil))
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
