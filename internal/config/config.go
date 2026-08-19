@@ -160,4 +160,8 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// ContentFilter configures sensitive-word and PII redaction applied to
+	// inbound chat-style request payloads before they are forwarded upstream.
+	ContentFilter ContentFilterConfig `yaml:"content-filter" json:"content-filter"`
 }
