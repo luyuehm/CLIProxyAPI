@@ -130,6 +130,47 @@ usage-statistics-enabled: false
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
+# Multi-platform alert notifications (Feishu / DingTalk / WeCom).
+# When enabled, the usage accounting pipeline evaluates the rules below on a
+# fixed interval and pushes fired alerts to the configured webhooks. Disabled
+# by default. Inspect current state with: GET /v0/management/alerts
+alerts:
+  enabled: false
+  # Rule evaluation interval as a Go duration string (e.g. "1m", "30s"). Default: "1m".
+  check-interval: "1m"
+  # Per-webhook HTTP timeout as a Go duration string. Default: "5s".
+  http-timeout: "5s"
+  # Feishu (Lark) custom bot webhook URL. Empty disables the Feishu channel.
+  feishu-webhook-url: ""
+  # DingTalk custom bot webhook URL. Empty disables the DingTalk channel.
+  dingtalk-webhook-url: ""
+  # DingTalk bot signing secret. Required when the bot enables signing; empty disables it.
+  dingtalk-secret: ""
+  # WeCom (WeChat Work) group bot webhook URL. Empty disables the WeCom channel.
+  wecom-webhook-url: ""
+  # Alert rules, evaluated against each observed usage target every interval.
+  # kind: usage_limit | anomaly | fault
+  # severity: info | warning | critical
+  # target: auth-index or API key name to scope the rule; empty matches every target.
+  rules:
+    # - name: "usage-limit"
+    #   kind: usage_limit
+    #   severity: warning
+    #   target: ""
+    #   token-limit: 1000000
+    #   request-limit: 0
+    #   cooldown: "15m"
+    # - name: "fault"
+    #   kind: fault
+    #   severity: critical
+    #   error-count-limit: 5
+    #   cooldown: "10m"
+    # - name: "anomaly"
+    #   kind: anomaly
+    #   severity: warning
+    #   error-rate-limit: 0.5
+    #   cooldown: "10m"
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""

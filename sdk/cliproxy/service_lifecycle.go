@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/alerts"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
@@ -54,6 +55,10 @@ func (s *Service) Run(ctx context.Context) error {
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
 		redisqueue.SetUsageStatisticsEnabled(true)
+	}
+
+	if s.cfg != nil {
+		alerts.Install(s.cfg.Alerts)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -345,6 +350,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		alerts.Stop()
 		usage.StopDefault()
 	})
 	return shutdownErr
