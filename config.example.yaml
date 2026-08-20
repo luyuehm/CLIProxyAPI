@@ -130,6 +130,50 @@ usage-statistics-enabled: false
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
+# Department-level cost allocation. When enabled, each upstream request is
+# priced against the price table below and charged to the department/team/project
+# whose rule matches the request's client API key or auth credential ID.
+# Disabled by default.
+#
+# Reports:
+#   GET /v0/management/cost-allocation           # current window snapshot (JSON)
+#   GET /v0/management/cost-allocation/export    # CSV export (all periods)
+#
+# cost-allocation:
+#   enabled: true
+#   currency: "USD"
+#   # Period for aggregation and export. One of "monthly" (default) or "quarterly".
+#   period: "monthly"
+#   # Departments whose records match no rule land here (default: "unallocated").
+#   unallocated-name: "unallocated"
+#   # Ordered rule list: the first rule matching a record wins. Match criteria
+#   # are OR'ed within each rule; mix exact API keys, prefixes/suffixes, and
+#   # auth credential IDs as needed. One rule may set default: true as a
+#   # catch-all.
+#   rules:
+#     - name: "engineering"
+#       api-key-prefixes:
+#         - "sk-eng-"
+#     - name: "finance"
+#       api-keys:
+#         - "sk-fin-001"
+#         - "sk-fin-002"
+#     - name: "it"
+#       default: true
+#   # Ordered price table (per 1000 tokens). The first entry whose provider and
+#   # model match (empty fields are wildcards) wins, so list specific rates first.
+#   prices:
+#     - model: "gpt-5.4"
+#       input-rate-per-1k: 1.25
+#       output-rate-per-1k: 10.0
+#       cache-read-rate-per-1k: 0.125
+#       cache-write-rate-per-1k: 1.25
+#       reasoning-rate-per-1k: 15.0
+#     - input-rate-per-1k: 0.15
+#       output-rate-per-1k: 0.6
+#       cache-read-rate-per-1k: 0.075
+#       cache-write-rate-per-1k: 0.15
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""

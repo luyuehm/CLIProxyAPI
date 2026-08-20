@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/costallocation"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -54,6 +55,12 @@ func (s *Service) Run(ctx context.Context) error {
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
 		redisqueue.SetUsageStatisticsEnabled(true)
+	}
+	// Register the cost allocation tracker so usage records flow into
+	// department-level cost aggregation. No-op when the cost-allocation config
+	// is disabled or absent.
+	if s.cfg != nil {
+		costallocation.Install(costallocation.NewTracker(s.cfg.CostAllocation))
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
