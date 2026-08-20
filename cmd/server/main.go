@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/license"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -669,6 +670,12 @@ func main() {
 			cmd.WaitForCloudDeploy()
 			return
 		}
+		// Enterprise license check
+		if !license.CheckLicenseMiddleware(context.Background()) {
+			log.Errorf("enterprise license check failed; use " + license.EnvLicenseKey + " to set a valid license key")
+			return
+		}
+
 		if localModel && (!tuiMode || standalone) {
 			log.Info("Local model mode: using embedded model catalogs, remote model updates disabled")
 		}
