@@ -221,6 +221,46 @@ type QuotaExceeded struct {
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
 }
 
+// ContentFilterConfig configures inbound request content filtering for sensitive
+// words and PII redaction. It is applied to chat-style request payloads before
+// they are forwarded upstream, independent of provider-specific cloaking.
+type ContentFilterConfig struct {
+	// Enabled toggles the whole content filter. Default false.
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// Action controls how a match is handled.
+	//   "redact" (default): replace matches with the configured placeholder.
+	//   "block": reject the request with 400 and a policy error.
+	//   "mask": replace all but the first and last character of a match.
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
+
+	// Placeholder is substituted for every redacted match. Default "[REDACTED]".
+	Placeholder string `yaml:"placeholder,omitempty" json:"placeholder,omitempty"`
+
+	// SensitiveWords is the list of words to filter. Case-insensitive.
+	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+
+	// WholeWord requires sensitive words to match on word boundaries.
+	WholeWord bool `yaml:"whole-word,omitempty" json:"whole-word,omitempty"`
+
+	// PIITypes selects which PII categories are redacted.
+	// Supported: "email", "phone", "id-card", "bank-card".
+	// Use ["all"] to enable every supported category.
+	PIITypes []string `yaml:"pii-types,omitempty" json:"pii-types,omitempty"`
+
+	// Models restricts the filter to requests whose model matches one of these
+	// wildcard patterns (e.g. "gpt-*", "claude-*"). Empty means all models.
+	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Protocols restricts the filter to specific translator protocols
+	// (e.g. "openai", "claude", "gemini", "codex"). Empty means all protocols.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
+
+	// MinRedactionsToBlock sets how many matches under "block" action must
+	// accumulate before the request is rejected. Default 1.
+	MinRedactionsToBlock int `yaml:"min-redactions-to-block,omitempty" json:"min-redactions-to-block,omitempty"`
+}
+
 // RoutingConfig configures how credentials are selected for requests.
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
