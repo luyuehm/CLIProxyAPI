@@ -130,6 +130,53 @@ usage-statistics-enabled: false
 # Default: 60. Max: 3600.
 redis-usage-queue-retention-seconds: 60
 
+# Department-level cost allocation configuration. When enabled, usage records are
+# mapped to departments, teams, and projects based on API keys, request headers, or tags,
+# priced against the token price table, and aggregated by monthly/quarterly/annual periods.
+# Reports and CSV exports are accessible via /v0/management/cost-allocation/*.
+# cost-allocation:
+#   enabled: true
+#   currency: "USD"
+#   default-department: "General"
+#   default-team: "Core"
+#   default-project: "Default"
+#   # Custom headers to inspect for department/team/project tags
+#   tag-keys:
+#     - "X-Department"
+#     - "X-Team"
+#     - "X-Project"
+#     - "X-Cost-Center"
+#   # Department mapping rules (evaluated in order, first match wins)
+#   rules:
+#     - department: "Engineering"
+#       team: "AI-Platform"
+#       project: "Copilot"
+#       api-key-prefixes:
+#         - "sk-eng-"
+#     - department: "Marketing"
+#       team: "Growth"
+#       project: "SEO-Bot"
+#       api-keys:
+#         - "sk-mkt-prod-01"
+#     - department: "Finance"
+#       team: "Operations"
+#       project: "Invoice-AI"
+#       tags:
+#         cost_center: "fin-101"
+#   # Token price rates (per 1000 tokens)
+#   prices:
+#     - model: "gpt-4o"
+#       provider: "openai"
+#       input-rate-per-1k: 0.005
+#       output-rate-per-1k: 0.015
+#       cache-read-rate-per-1k: 0.0025
+#       cache-write-rate-per-1k: 0.005
+#       reasoning-rate-per-1k: 0.020
+#     - model: "claude-3-5-sonnet"
+#       provider: "anthropic"
+#       input-rate-per-1k: 0.003
+#       output-rate-per-1k: 0.015
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""

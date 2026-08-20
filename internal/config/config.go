@@ -4,6 +4,8 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import "github.com/router-for-me/CLIProxyAPI/v7/internal/costallocation"
+
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
@@ -56,6 +58,11 @@ type Config struct {
 
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
+
+	// CostAllocation configures department-level cost allocation. When enabled,
+	// usage records are categorized by department, team, project, API key, and tags,
+	// priced against the configured price table, and summarized for reporting.
+	CostAllocation costallocation.AllocationConfig `yaml:"cost-allocation" json:"cost-allocation"`
 
 	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
 	// in memory for Management API consumers.
