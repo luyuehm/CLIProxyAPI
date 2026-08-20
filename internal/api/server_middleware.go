@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/license"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -107,6 +109,40 @@ func (s *Server) serveExampleAPIKeyWarningPage(c *gin.Context) {
 	}
 	c.String(http.StatusOK, safemode.ExampleAPIKeyWarningPageHTML(keys, exampleAPIKeyManagementURL))
 	c.Abort()
+}
+
+// licenseDegradedMiddleware blocks proxy API endpoints when the license is degraded.
+func (s *Server) licenseDegradedMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || !license.IsDegraded() || c == nil || c.Request == nil || c.Request.URL == nil {
+			c.Next()
+			return
+		}
+
+		path := c.Request.URL.Path
+		// Allow management and health endpoints through.
+		if licenseDegradedAllowedPath(path) {
+			c.Next()
+			return
+		}
+
+		c.Header("X-License-Status", "degraded")
+		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+			"error":   "license_degraded",
+			"message": "License is invalid or expired. Server is in degraded mode. Set a valid LICENSE_KEY or upgrade to enterprise mode.",
+		})
+	}
+}
+
+// licenseDegradedAllowedPath returns true for paths that are allowed
+// during license degradation (management, health, enterprise endpoints).
+func licenseDegradedAllowedPath(path string) bool {
+	return strings.HasPrefix(path, "/management/") ||
+		strings.HasPrefix(path, "/api/") ||
+		path == "/" ||
+		path == "/healthz" ||
+		path == "/api/v1/license" ||
+		path == "/enterprise/"
 }
 
 func isExampleAPIKeySafeModeProxyPath(path string) bool {
