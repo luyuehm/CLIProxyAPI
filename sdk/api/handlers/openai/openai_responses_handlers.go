@@ -530,6 +530,13 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	// Apply sensitive-word / PII content filtering before any further handling.
+	var filterOK bool
+	rawJSON, filterOK = handlers.ApplyContentFilter(c, rawJSON, h.Cfg, "responses")
+	if !filterOK {
+		return
+	}
+
 	rawJSON = h.prepareCodexMultiAgentV2Tools(c, rawJSON)
 
 	// Check if the client requested a streaming response.

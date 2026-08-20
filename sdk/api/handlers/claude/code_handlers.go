@@ -83,6 +83,13 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
 
+	// Apply sensitive-word / PII content filtering before any further handling.
+	var filterOK bool
+	rawJSON, filterOK = handlers.ApplyContentFilter(c, rawJSON, h.Cfg, "claude")
+	if !filterOK {
+		return
+	}
+
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	if !streamResult.Exists() || streamResult.Type == gjson.False {

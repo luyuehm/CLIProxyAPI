@@ -45,6 +45,11 @@ type SDKConfig struct {
 	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
 	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
 
+	// ContentFilter mirrors the request content-filter rules for API handlers.
+	// The canonical source is the top-level "content-filter" block; this field
+	// is projected at runtime and never parsed from YAML directly.
+	ContentFilter ContentFilterConfig `yaml:"-" json:"-"`
+
 	// ClaudeCode configures Claude Code compatibility behavior.
 	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
 

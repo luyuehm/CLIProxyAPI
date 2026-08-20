@@ -153,6 +153,16 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 	method := action[1]
 	rawJSON, _ := c.GetRawData()
 
+	// Apply sensitive-word / PII content filtering to chat-style methods only.
+	switch method {
+	case "generateContent", "streamGenerateContent":
+		var filterOK bool
+		rawJSON, filterOK = handlers.ApplyContentFilter(c, rawJSON, h.Cfg, "gemini")
+		if !filterOK {
+			return
+		}
+	}
+
 	switch method {
 	case "generateContent":
 		h.handleGenerateContent(c, action[0], rawJSON)

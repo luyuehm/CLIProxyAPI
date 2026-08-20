@@ -113,6 +113,13 @@ func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
+	// Apply sensitive-word / PII content filtering before any further handling.
+	var filterOK bool
+	rawJSON, filterOK = handlers.ApplyContentFilter(c, rawJSON, h.Cfg, "openai")
+	if !filterOK {
+		return
+	}
+
 	// Check if the client requested a streaming response.
 	streamResult := gjson.GetBytes(rawJSON, "stream")
 	stream := streamResult.Type == gjson.True

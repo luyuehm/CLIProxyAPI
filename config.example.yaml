@@ -783,3 +783,38 @@ nonstream-keepalive-interval: 0
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
+
+# content-filter: # Inbound request content filtering for sensitive words and PII redaction.
+#   enabled: false                 # Master switch. Default false (no filtering).
+#   action: redact                 # "redact" (default): replace matches with the placeholder.
+#                                   # "block": reject the request with 400 once the threshold is met.
+#                                   # "mask": keep first/last rune, mask the middle (e.g. "f******e").
+#   placeholder: "[REDACTED]"      # Replacement for redacted matches. Default "[REDACTED]".
+#   sensitive-words:               # Case-insensitive; longest-first matching. Optional.
+#     - "内部机密"
+#     - "confidential"
+#   whole-word: false              # Require word boundaries for sensitive words. Default false.
+#   pii-types:                     # PII categories to redact. Use ["all"] for every category.
+#                                   # Supported: "email", "phone", "id-card", "bank-card".
+#     - "email"
+#     - "phone"
+#     - "id-card"
+#   models:                        # Optional: restrict to model wildcard patterns (e.g. "claude-*").
+#                                   # Empty means all models.
+#     - "gpt-*"
+#   protocols:                     # Optional: restrict to translator protocols.
+#                                   # Options: openai, responses, claude, gemini, codex, antigravity.
+#                                   # Empty means all protocols.
+#     - "openai"
+#     - "claude"
+#   min-redactions-to-block: 1     # Under "block" action, how many matches to reject on. Default 1.
+#
+# Financial / medical compliance example:
+# content-filter:
+#   enabled: true
+#   action: block
+#   pii-types: ["all"]
+#   sensitive-words:
+#     - "患者身份证"
+#     - "银行卡号"
+#   min-redactions-to-block: 1
