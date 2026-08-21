@@ -172,6 +172,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
+		mgmt.GET("/anomaly/stats", s.mgmt.GetAnomalyStats)
+		mgmt.GET("/anomaly/events", s.mgmt.GetAnomalyEvents)
+		mgmt.POST("/anomaly/resolve", s.mgmt.ResolveAnomalyEvent)
 	}
 }
 

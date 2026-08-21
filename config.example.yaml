@@ -782,4 +782,20 @@ nonstream-keepalive-interval: 0
 #           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
+
+# Optional anomaly detection for intelligent rate and usage monitoring
+# anomaly-detection:
+#   enabled: true
+#   window-size: "5m"                    # Sliding window for rate calculation
+#   num-buckets: 10                      # Number of sub-buckets in the window
+#   rate-anomaly-threshold: 3.0          # Multiplier over baseline to trigger (3x = 300%)
+#   absolute-tpm-limit: 0                # Absolute TPM limit (0 = disabled)
+#   absolute-qps-limit: 0                # Absolute QPS limit (0 = disabled)
+#   infinite-loop-min-hits: 20           # Min identical requests to flag as infinite loop
+#   infinite-loop-window: "1m"           # Time window for infinite loop counting
+#   concurrency-abuse-threshold: 50       # Max concurrent requests from a single key
+#   sustained-high-window: "15m"         # Duration for sustained high detection
+#   sustained-high-threshold: 2.0        # Multiplier for sustained high detection
+#   cooldown-interval: "5m"              # Min interval between disposition actions
+#   max-events-per-key: 100              # Max in-memory events per principal
 #         - "generationConfig.responseJsonSchema"
