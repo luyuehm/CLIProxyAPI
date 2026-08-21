@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/anomaly"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -103,6 +104,8 @@ type Server struct {
 
 	exampleAPIKeySafeModeEnabled bool
 	exampleAPIKeySafeModeActive  atomic.Bool
+	// anomalyEngine detects rate and usage anomalies for the AI Gateway.
+	anomalyEngine *anomaly.Engine
 }
 
 // NewServer creates and initializes a new API server instance.
@@ -198,11 +201,43 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+
+	// Initialize anomaly detection engine
+	if cfg.AnomalyDetection.Enabled {
+		anomalyCfg := anomaly.DefaultConfig()
+		anomalyCfg.Enabled = true
+		anomalyCfg.WindowSize = parseDuration(cfg.AnomalyDetection.WindowSize, anomalyCfg.WindowSize)
+		anomalyCfg.NumBuckets = cfg.AnomalyDetection.NumBuckets
+		if anomalyCfg.NumBuckets == 0 {
+			anomalyCfg.NumBuckets = 10
+		}
+		anomalyCfg.RateAnomalyThreshold = cfg.AnomalyDetection.RateAnomalyThreshold
+		if anomalyCfg.RateAnomalyThreshold == 0 {
+			anomalyCfg.RateAnomalyThreshold = 3.0
+		}
+		anomalyCfg.AbsoluteTPMLimit = cfg.AnomalyDetection.AbsoluteTPMLimit
+		anomalyCfg.AbsoluteQPSLimit = cfg.AnomalyDetection.AbsoluteQPSLimit
+		anomalyCfg.InfiniteLoopMinHits = cfg.AnomalyDetection.InfiniteLoopMinHits
+		anomalyCfg.InfiniteLoopWindow = parseDuration(cfg.AnomalyDetection.InfiniteLoopWindow, anomalyCfg.InfiniteLoopWindow)
+		anomalyCfg.ConcurrencyAbuseThreshold = cfg.AnomalyDetection.ConcurrencyAbuseThreshold
+		anomalyCfg.SustainedHighWindow = parseDuration(cfg.AnomalyDetection.SustainedHighWindow, anomalyCfg.SustainedHighWindow)
+		anomalyCfg.SustainedHighThreshold = cfg.AnomalyDetection.SustainedHighThreshold
+		anomalyCfg.CooldownInterval = parseDuration(cfg.AnomalyDetection.CooldownInterval, anomalyCfg.CooldownInterval)
+		anomalyCfg.MaxEventsPerKey = cfg.AnomalyDetection.MaxEventsPerKey
+		if anomalyCfg.MaxEventsPerKey == 0 {
+			anomalyCfg.MaxEventsPerKey = 100
+		}
+		s.anomalyEngine = anomaly.NewEngine(anomalyCfg)
+	}
+
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
+	if s.anomalyEngine != nil {
+		s.mgmt.SetAnomalyEngine(s.anomalyEngine)
+	}
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
@@ -259,6 +294,17 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 //
 // Returns:
 //   - error: An error if the server fails to start
+func parseDuration(s string, fallback time.Duration) time.Duration {
+	if s == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
 func (s *Server) Start() error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")

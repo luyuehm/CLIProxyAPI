@@ -160,4 +160,7 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// AnomalyDetection configures the intelligent rate and usage anomaly detection engine.
+	AnomalyDetection AnomalyDetectionConfig `yaml:"anomaly-detection" json:"anomaly-detection"`
 }

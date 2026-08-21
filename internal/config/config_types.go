@@ -8,6 +8,49 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AnomalyDetectionConfig configures the intelligent rate and usage anomaly detection engine.
+type AnomalyDetectionConfig struct {
+	// Enabled toggles the anomaly detection engine.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// WindowSize is the sliding window duration for rate calculation, e.g. "5m".
+	WindowSize string `yaml:"window-size" json:"window-size"`
+
+	// NumBuckets is the number of sub-buckets in the sliding window.
+	NumBuckets int `yaml:"num-buckets" json:"num-buckets"`
+
+	// RateAnomalyThreshold is the multiplier over baseline to trigger a rate anomaly.
+	// E.g., 3.0 means TPM > 300% of baseline triggers.
+	RateAnomalyThreshold float64 `yaml:"rate-anomaly-threshold" json:"rate-anomaly-threshold"`
+
+	// AbsoluteTPMLimit is an absolute TPM limit that triggers immediately regardless of baseline.
+	AbsoluteTPMLimit int64 `yaml:"absolute-tpm-limit" json:"absolute-tpm-limit"`
+
+	// AbsoluteQPSLimit is an absolute QPS limit that triggers immediately regardless of baseline.
+	AbsoluteQPSLimit float64 `yaml:"absolute-qps-limit" json:"absolute-qps-limit"`
+
+	// InfiniteLoopMinHits is the minimum number of identical requests to flag as an infinite loop.
+	InfiniteLoopMinHits int `yaml:"infinite-loop-min-hits" json:"infinite-loop-min-hits"`
+
+	// InfiniteLoopWindow is the time window within which identical requests are counted, e.g. "1m".
+	InfiniteLoopWindow string `yaml:"infinite-loop-window" json:"infinite-loop-window"`
+
+	// ConcurrencyAbuseThreshold is the number of concurrent requests from a single key to flag.
+	ConcurrencyAbuseThreshold int `yaml:"concurrency-abuse-threshold" json:"concurrency-abuse-threshold"`
+
+	// SustainedHighWindow is the duration of sustained above-threshold usage to escalate, e.g. "15m".
+	SustainedHighWindow string `yaml:"sustained-high-window" json:"sustained-high-window"`
+
+	// SustainedHighThreshold is the multiplier for sustained high detection.
+	SustainedHighThreshold float64 `yaml:"sustained-high-threshold" json:"sustained-high-threshold"`
+
+	// CooldownInterval is the minimum time between consecutive disposition actions for the same key, e.g. "5m".
+	CooldownInterval string `yaml:"cooldown-interval" json:"cooldown-interval"`
+
+	// MaxEventsPerKey caps the in-memory event ledger size per principal.
+	MaxEventsPerKey int `yaml:"max-events-per-key" json:"max-events-per-key"`
+}
+
 // RequestScopedErrorRule configures custom classification and handling for upstream errors.
 type RequestScopedErrorRule struct {
 	// Status matches the HTTP status code of the upstream response (e.g. 400).
