@@ -172,6 +172,24 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
+
+		// Enterprise shadow evaluation and canary control panel endpoints.
+		if s.shadowHandler != nil {
+			shadowGW := func(h func(http.ResponseWriter, *http.Request)) gin.HandlerFunc {
+				return func(c *gin.Context) {
+					h(c.Writer, c.Request)
+				}
+			}
+			mgmt.GET("/shadow/config", shadowGW(s.shadowHandler.HandleConfig))
+			mgmt.PUT("/shadow/config", shadowGW(s.shadowHandler.HandleConfig))
+			mgmt.POST("/shadow/config", shadowGW(s.shadowHandler.HandleConfig))
+			mgmt.GET("/shadow/stats", shadowGW(s.shadowHandler.HandleStats))
+			mgmt.GET("/shadow/records", shadowGW(s.shadowHandler.HandleRecords))
+			mgmt.GET("/shadow/canary", shadowGW(s.shadowHandler.HandleCanary))
+			mgmt.POST("/shadow/canary", shadowGW(s.shadowHandler.HandleCanary))
+			mgmt.DELETE("/shadow/canary", shadowGW(s.shadowHandler.HandleCanary))
+			mgmt.GET("/shadow/health", shadowGW(s.shadowHandler.HandleHealth))
+		}
 	}
 }
 

@@ -739,3 +739,41 @@ func (m OpenAICompatibilityModel) GetForceMapping() bool    { return m.ForceMapp
 func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+// ShadowConfig configures the enterprise shadow traffic mirroring engine.
+type ShadowConfig struct {
+	// Enabled toggles the whole shadow engine.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// QueueSize bounds the pending mirror jobs. When full, incoming mirrors are dropped.
+	QueueSize int `yaml:"queue-size,omitempty" json:"queue-size,omitempty"`
+	// WorkerCount bounds the concurrent mirror evaluations.
+	WorkerCount int `yaml:"worker-count,omitempty" json:"worker-count,omitempty"`
+	// TimeoutSeconds bounds one mirror evaluation in seconds.
+	TimeoutSeconds int `yaml:"timeout-seconds,omitempty" json:"timeout-seconds,omitempty"`
+	// Mirrors is the list of shadow mirroring rules.
+	Mirrors []ShadowMirrorConfig `yaml:"mirrors,omitempty" json:"mirrors,omitempty"`
+	// Canaries is the list of canary release rules.
+	Canaries []ShadowCanaryConfig `yaml:"canaries,omitempty" json:"canaries,omitempty"`
+}
+
+// ShadowMirrorConfig configures one shadow mirroring rule.
+type ShadowMirrorConfig struct {
+	Model      string            `yaml:"model" json:"model"`
+	Candidate  string            `yaml:"candidate" json:"candidate"`
+	Ratio      float64           `yaml:"ratio" json:"ratio"`
+	Endpoint   string            `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	APIKey     string            `yaml:"api-key,omitempty" json:"-"`
+	Headers    map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	UserHeader string            `yaml:"user-header,omitempty" json:"user-header,omitempty"`
+}
+
+// ShadowCanaryConfig configures a canary release for a model pair.
+type ShadowCanaryConfig struct {
+	Model        string            `yaml:"model" json:"model"`
+	Candidate    string            `yaml:"candidate" json:"candidate"`
+	Weight       int               `yaml:"weight" json:"weight"`
+	Provider     string            `yaml:"provider,omitempty" json:"provider,omitempty"`
+	Headers      map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	UserIDHeader string            `yaml:"user-id-header,omitempty" json:"user-id-header,omitempty"`
+	UserIDs      []string          `yaml:"user-ids,omitempty" json:"user-ids,omitempty"`
+}

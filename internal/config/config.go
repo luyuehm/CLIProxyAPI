@@ -160,4 +160,7 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// ShadowConfig configures the enterprise shadow traffic mirroring engine.
+	ShadowConfig ShadowConfig `yaml:"shadow" json:"shadow"`
 }
