@@ -174,4 +174,6 @@ type Config struct {
 
 	// AnomalyDetection configures the intelligent rate and usage anomaly detection engine.
 	AnomalyDetection AnomalyDetectionConfig `yaml:"anomaly-detection" json:"anomaly-detection"`
+	// ShadowConfig configures the enterprise shadow traffic mirroring engine.
+	ShadowConfig ShadowConfig `yaml:"shadow" json:"shadow"`
 }

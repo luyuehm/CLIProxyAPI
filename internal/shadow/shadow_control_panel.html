@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shadow Mode & Canary Control</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+.header { background: linear-gradient(135deg, #1e293b, #0f172a); border-bottom: 1px solid #334155; padding: 1.25rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
+.header .badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
+.badge.active { background: #065f46; color: #6ee7b7; }
+.badge.inactive { background: #7f1d1d; color: #fca5a5; }
+.container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+.card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.5rem; }
+.card h2 { font-size: 1.125rem; font-weight: 600; margin-bottom: 1rem; color: #f1f5f9; }
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.stat { }
+.stat-label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-value { font-size: 1.5rem; font-weight: 700; color: #f1f5f9; }
+.stat-value.good { color: #22c55e; }
+.stat-value.warn { color: #eab308; }
+.stat-value.bad { color: #ef4444; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 0.75rem 0.5rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; border-bottom: 1px solid #334155; }
+td { padding: 0.75rem 0.5rem; border-bottom: 1px solid #1e293b; font-size: 0.875rem; }
+tr:hover td { background: #0f172a40; }
+.slider-row { display: flex; align-items: center; gap: 0.75rem; }
+input[type="range"] { flex: 1; accent-color: #3b82f6; height: 6px; border-radius: 3px; }
+.weight-display { min-width: 2.5rem; text-align: right; font-weight: 600; color: #3b82f6; }
+.btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; border: none; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+.btn-primary { background: #3b82f6; color: #fff; }
+.btn-primary:hover { background: #2563eb; }
+.btn-danger { background: #dc2626; color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+.mb-2 { margin-bottom: 1rem; }
+.mt-2 { margin-top: 1rem; }
+.flex { display: flex; }
+.gap-2 { gap: 0.5rem; }
+.gap-4 { gap: 1rem; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.text-sm { font-size: 0.875rem; }
+.text-xs { font-size: 0.75rem; }
+.text-muted { color: #94a3b8; }
+.code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.75rem; }
+.tabs { display: flex; gap: 0; border-bottom: 1px solid #334155; margin-bottom: 1.5rem; }
+.tab { padding: 0.75rem 1.5rem; cursor: pointer; border-bottom: 2px solid transparent; font-size: 0.875rem; font-weight: 500; color: #94a3b8; transition: all 0.15s; }
+.tab:hover { color: #e2e8f0; }
+.tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.toast { position: fixed; bottom: 2rem; right: 2rem; padding: 1rem 1.5rem; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; opacity: 0; transition: opacity 0.3s; z-index: 100; }
+.toast.show { opacity: 1; }
+.toast.success { background: #065f46; color: #6ee7b7; border: 1px solid #059669; }
+.toast.error { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }
+.empty-state { text-align: center; padding: 3rem; color: #64748b; }
+.empty-state p { font-size: 0.875rem; }
+@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div style="display:flex;align-items:center;gap:1rem;">
+    <h1>Shadow Mode &amp; Canary Control</h1>
+    <span id="statusBadge" class="badge inactive">Inactive</span>
+  </div>
+  <div class="flex gap-2">
+    <button class="btn btn-primary" onclick="refreshAll()">&#x21bb; Refresh</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</div>
+    <div class="tab" data-tab="mirrors" onclick="switchTab('mirrors')">Mirror Rules</div>
+    <div class="tab" data-tab="canary" onclick="switchTab('canary')">Canary Releases</div>
+    <div class="tab" data-tab="records" onclick="switchTab('records')">Evaluation Records</div>
+  </div>
+
+  <!-- Overview Tab -->
+  <div id="tab-overview" class="tab-content active">
+    <div class="grid">
+      <div class="card">
+        <h2>Engine Health</h2>
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-label">Queue Size</div><div class="stat-value" id="queueSize">-</div></div>
+          <div class="stat"><div class="stat-label">Workers</div><div class="stat-value" id="workers">-</div></div>
+          <div class="stat"><div class="stat-label">Stored Evals</div><div class="stat-value" id="storedEvals">-</div></div>
+          <div class="stat"><div class="stat-label">Status</div><div class="stat-value" id="engineStatus">-</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Aggregate Statistics</h2>
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-label">Total Evaluations</div><div class="stat-value" id="totalEvals">0</div></div>
+          <div class="stat"><div class="stat-label">Error Rate</div><div class="stat-value" id="errorRate">0%</div></div>
+          <div class="stat"><div class="stat-label">Avg Similarity</div><div class="stat-value" id="avgSimilarity">-</div></div>
+          <div class="stat"><div class="stat-label">Avg TTFT</div><div class="stat-value" id="avgTTFT">-</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mirrors Tab -->
+  <div id="tab-mirrors" class="tab-content">
+    <div class="card">
+      <div class="flex items-center justify-between mb-2">
+        <h2>Mirror Rules</h2>
+      </div>
+      <div id="mirrorRules">
+        <div class="empty-state"><p>No mirror rules configured. Add rules in shadow.mirrors in config.yaml.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Canary Tab -->
+  <div id="tab-canary" class="tab-content">
+    <div class="card">
+      <div class="flex items-center justify-between mb-2">
+        <h2>Canary Releases</h2>
+      </div>
+      <div id="canaryRules">
+        <div class="empty-state"><p>No canary rules configured. Add rules in shadow.canaries in config.yaml.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Records Tab -->
+  <div id="tab-records" class="tab-content">
+    <div class="card">
+      <div class="flex items-center justify-between mb-2">
+        <h2>Recent Evaluation Records</h2>
+        <span class="text-xs text-muted" id="recordCount"></span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="recordsTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Model</th>
+              <th>Candidate</th>
+              <th>Similarity</th>
+              <th>Token Ratio</th>
+              <th>TTFT (ms)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="recordsBody">
+            <tr class="empty-state"><td colspan="7"><p>No evaluation records yet. Enable shadow mirroring to populate.</p></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const BASE = '/v0/management/shadow';
+
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + type + ' show';
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(BASE + path, {
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', ...opts.headers },
+    ...opts,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(res.status + ': ' + text.slice(0, 200));
+  }
+  return res.json();
+}
+
+async function refreshAll() {
+  try {
+    await Promise.all([loadHealth(), loadStats(), loadConfig(), loadRecords()]);
+  } catch (e) {
+    showToast('Error loading data: ' + e.message, 'error');
+  }
+}
+
+async function loadHealth() {
+  try {
+    const h = await api('/health');
+    document.getElementById('queueSize').textContent = h.queue_size;
+    document.getElementById('workers').textContent = h.workers;
+    document.getElementById('storedEvals').textContent = h.stored_evals;
+    const badge = document.getElementById('statusBadge');
+    if (h.enabled) {
+      badge.textContent = 'Active';
+      badge.className = 'badge active';
+      document.getElementById('engineStatus').textContent = 'Running';
+      document.getElementById('engineStatus').className = 'stat-value good';
+    } else {
+      badge.textContent = 'Inactive';
+      badge.className = 'badge inactive';
+      document.getElementById('engineStatus').textContent = 'Off';
+      document.getElementById('engineStatus').className = 'stat-value';
+    }
+  } catch (e) {
+    // shadow engine not configured
+    document.getElementById('engineStatus').textContent = 'N/A';
+    document.getElementById('statusBadge').textContent = 'Unavailable';
+  }
+}
+
+async function loadStats() {
+  try {
+    const s = await api('/stats');
+    document.getElementById('totalEvals').textContent = s.total_evals || 0;
+    const rate = s.total_evals > 0 ? ((s.error_count / s.total_evals) * 100).toFixed(1) + '%' : '0%';
+    document.getElementById('errorRate').textContent = rate;
+    document.getElementById('avgSimilarity').textContent = s.avg_similarity ? (s.avg_similarity * 100).toFixed(1) + '%' : '-';
+    document.getElementById('avgTTFT').textContent = s.avg_ttft_ms ? s.avg_ttft_ms.toFixed(0) + 'ms' : '-';
+  } catch (e) { /* ignore */ }
+}
+
+async function loadConfig() {
+  try {
+    const cfg = await api('/config');
+    renderMirrors(cfg.mirrors || []);
+    renderCanaries(cfg.canaries || []);
+  } catch (e) { /* ignore */ }
+}
+
+function renderMirrors(mirrors) {
+  const el = document.getElementById('mirrorRules');
+  if (!mirrors.length) {
+    el.innerHTML = '<div class="empty-state"><p>No mirror rules configured. Add rules in shadow.mirrors in config.yaml.</p></div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Production Model</th><th>Candidate Model</th><th>Ratio</th><th>Endpoint</th></tr></thead><tbody>';
+  for (const m of mirrors) {
+    html += '<tr><td>' + esc(m.model) + '</td><td>' + esc(m.candidate) + '</td>';
+    html += '<td>' + (m.ratio * 100).toFixed(1) + '%</td>';
+    html += '<td class="text-xs text-muted">' + esc(m.endpoint || 'default') + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function renderCanaries(canaries) {
+  const el = document.getElementById('canaryRules');
+  if (!canaries.length) {
+    el.innerHTML = '<div class="empty-state"><p>No canary rules configured. Add rules in shadow.canaries in config.yaml.</p></div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Production Model</th><th>Candidate Model</th><th>Weight</th><th>Actions</th></tr></thead><tbody>';
+  for (const c of canaries) {
+    html += '<tr>';
+    html += '<td>' + esc(c.model) + '</td>';
+    html += '<td>' + esc(c.candidate) + '</td>';
+    html += '<td><div class="slider-row">';
+    html += '<input type="range" min="0" max="100" value="' + c.weight + '" onchange="updateCanaryWeight(\'' + esc(c.model) + '\', this.value)">';
+    html += '<span class="weight-display">' + c.weight + '%</span>';
+    html += '</div></td>';
+    html += '<td><button class="btn btn-danger btn-sm" onclick="rollbackModel(\'' + esc(c.model) + '\')">Rollback</button></td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function updateCanaryWeight(model, weight) {
+  try {
+    await api('/canary', { method: 'POST', body: JSON.stringify({ model, weight: parseInt(weight) }) });
+    showToast('Canary weight updated for ' + model, 'success');
+  } catch (e) {
+    showToast('Update failed: ' + e.message, 'error');
+  }
+}
+
+async function rollbackModel(model) {
+  if (!confirm('Rollback ' + model + ' to 0% weight?')) return;
+  try {
+    await api('/canary?model=' + encodeURIComponent(model), { method: 'DELETE' });
+    showToast('Rolled back ' + model, 'success');
+    await loadConfig();
+  } catch (e) {
+    showToast('Rollback failed: ' + e.message, 'error');
+  }
+}
+
+async function loadRecords() {
+  try {
+    const data = await api('/records');
+    const tbody = document.getElementById('recordsBody');
+    document.getElementById('recordCount').textContent = 'Total: ' + (data.total || 0) + ' records';
+    if (!data.records || !data.records.length) {
+      tbody.innerHTML = '<tr class="empty-state"><td colspan="7"><p>No evaluation records yet.</p></td></tr>';
+      return;
+    }
+    let html = '';
+    for (const r of data.records) {
+      const time = new Date(r.timestamp).toLocaleTimeString();
+      const sim = r.similarity ? (r.similarity * 100).toFixed(1) + '%' : '-';
+      const ratio = r.token_ratio ? r.token_ratio.toFixed(2) : '-';
+      const ttft = r.candidate_ttft_ms ? r.candidate_ttft_ms.toFixed(0) : '-';
+      const status = r.error ? '<span class="stat-value bad">Error</span>' : '<span class="stat-value good">OK</span>';
+      html += '<tr>';
+      html += '<td class="text-xs text-muted">' + time + '</td>';
+      html += '<td class="code">' + esc(r.model || r.candidate) + '</td>';
+      html += '<td class="code">' + esc(r.candidate) + '</td>';
+      html += '<td>' + sim + '</td>';
+      html += '<td>' + ratio + '</td>';
+      html += '<td>' + ttft + '</td>';
+      html += '<td>' + status + '</td>';
+      html += '</tr>';
+    }
+    tbody.innerHTML = html;
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Auto-refresh
+refreshAll();
+setInterval(refreshAll, 15000);
+</script>
+</body>
+</html>
