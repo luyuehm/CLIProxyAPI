@@ -4,6 +4,21 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+// PromptCacheConfig configures the exact-match prompt cache.
+type PromptCacheConfig struct {
+	// Enabled toggles the exact-match prompt cache.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// DefaultTTL is the default time-to-live for cached entries as a duration string (e.g., "1h", "30m").
+	DefaultTTL string `yaml:"default-ttl,omitempty" json:"default-ttl,omitempty"`
+
+	// MaxSize is the maximum number of cached entries per model group.
+	MaxSize int `yaml:"max-size,omitempty" json:"max-size,omitempty"`
+
+	// ModelTTLs maps model names (exact or prefix match) to per-model TTL duration strings.
+	ModelTTLs map[string]string `yaml:"model-ttls,omitempty" json:"model-ttls,omitempty"`
+}
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
@@ -61,6 +76,9 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// PromptCache configures the exact-match prompt cache.
+	PromptCache PromptCacheConfig `yaml:"prompt-cache" json:"prompt-cache"`
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.

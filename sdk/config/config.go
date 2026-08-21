@@ -33,6 +33,8 @@ type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 
 type TLS = internalconfig.TLSConfig
 
+type PromptCacheConfig = internalconfig.PromptCacheConfig
+
 const (
 	DefaultPanelGitHubRepository = internalconfig.DefaultPanelGitHubRepository
 )

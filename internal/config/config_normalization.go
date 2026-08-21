@@ -2,8 +2,10 @@ package config
 
 import (
 	"strings"
+	"time"
 
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
+	log "github.com/sirupsen/logrus"
 )
 
 // NormalizePluginsConfig applies default plugin configuration values.
@@ -55,6 +57,30 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.Arch = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Arch)
 	cfg.ClaudeHeaderDefaults.Timeout = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timeout)
 	cfg.ClaudeHeaderDefaults.Timezone = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
+}
+
+// NormalizePromptCacheConfig applies defaults and validates the prompt cache configuration.
+func (cfg *Config) NormalizePromptCacheConfig() {
+	if cfg == nil {
+		return
+	}
+	pc := &cfg.PromptCache
+	if pc.DefaultTTL == "" {
+		pc.DefaultTTL = "1h"
+	}
+	if pc.MaxSize <= 0 {
+		pc.MaxSize = 1000
+	}
+	if _, err := time.ParseDuration(pc.DefaultTTL); err != nil {
+		log.Warnf("prompt-cache: invalid default-ttl %q, falling back to 1h: %v", pc.DefaultTTL, err)
+		pc.DefaultTTL = "1h"
+	}
+	for model, raw := range pc.ModelTTLs {
+		if _, err := time.ParseDuration(raw); err != nil {
+			log.Warnf("prompt-cache: invalid model-ttl %q for %q, removing entry: %v", raw, model, err)
+			delete(pc.ModelTTLs, model)
+		}
+	}
 }
 
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.

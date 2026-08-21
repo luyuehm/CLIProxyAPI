@@ -4,12 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
+	"crypto/sha256"
+	"encoding/hex"
+
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	"github.com/tidwall/gjson"
 	"golang.org/x/net/context"
 )
 
@@ -43,6 +50,19 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	originalRequestedModel := modelName
 	routeDecision := h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, false, execOptions)
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
+
+	// Prompt cache fast path: only for non-streaming, non-plugin-routed requests.
+	ginCtx := ginContextFromExecution(ctx)
+	if ginCtx != nil && cache.HasPromptCache() && routeDecision.ExecutorPluginID == "" {
+		if key := executionPromptCacheKey(ginCtx, modelName, rawJSON, entryProtocol); key != nil {
+			if cachedBody, hit := CheckCacheBeforeExecute(ginCtx, key); hit {
+				SetCacheHitHeader(ginCtx, true)
+				return cachedBody, nil, nil
+			}
+			SetCacheHitHeader(ginCtx, false)
+		}
+	}
+
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -100,6 +120,15 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
+
+	// Store in prompt cache on success
+	if ginCtx != nil && cache.HasPromptCache() && routeDecision.ExecutorPluginID == "" {
+		execKey := executionPromptCacheKey(ginCtx, modelName, rawJSON, entryProtocol)
+		if execKey != nil {
+			StorePromptCache(nil, ginCtx, execKey, body)
+		}
+	}
+
 	return body, responseHeaders, nil
 }
 
@@ -331,4 +360,60 @@ func (h *BaseAPIHandler) pluginExecutorHost() PluginExecutorHost {
 		return executorHost
 	}
 	return nil
+}
+
+// ginContextFromExecution extracts the Gin context stored in the execution context.
+func ginContextFromExecution(ctx context.Context) *gin.Context {
+	if ctx == nil {
+		return nil
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
+		return ginCtx
+	}
+	return nil
+}
+
+// executionPromptCacheKey builds a cache key for a non-streaming chat request.
+// It returns nil for streaming requests, non-chat-protocol payloads, or requests
+// without a deterministic temperature.
+func executionPromptCacheKey(ginCtx *gin.Context, modelName string, rawJSON []byte, entryProtocol string) *cache.PromptCacheKey {
+	if ginCtx == nil || len(rawJSON) == 0 || modelName == "" {
+		return nil
+	}
+	// Stream and parity requests are always uncacheable.
+	if ShouldBypassCache(ginCtx) {
+		return nil
+	}
+	span := strings.TrimSpace(gjson.GetBytes(rawJSON, "stream").String())
+	if span == "true" {
+		return nil
+	}
+	if entryProtocol != "" && !isCacheableProtocol(entryProtocol) {
+		return nil
+	}
+	key := BuildPromptCacheKey(rawJSON, modelName)
+	if key == nil {
+		return nil
+	}
+	return key
+}
+
+func isCacheableProtocol(protocol string) bool {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "openai", "claude", "gemini", "":
+		return true
+	default:
+		return false
+	}
+}
+
+// promptCacheSHA256 hashes the cache key into a stable hex string.
+func promptCacheSHA256(model, temperature, messages string) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(model))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(temperature))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(messages))
+	return hex.EncodeToString(h.Sum(nil))
 }
