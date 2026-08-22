@@ -754,6 +754,15 @@ type ShadowConfig struct {
 	Mirrors []ShadowMirrorConfig `yaml:"mirrors,omitempty" json:"mirrors,omitempty"`
 	// Canaries is the list of canary release rules.
 	Canaries []ShadowCanaryConfig `yaml:"canaries,omitempty" json:"canaries,omitempty"`
+	// RetentionMinutes is the evaluation record retention TTL. Zero means no TTL pruning.
+	RetentionMinutes int `yaml:"retention-minutes,omitempty" json:"retention-minutes,omitempty"`
+	// RetentionMaxRecords limits the evaluation record count after pruning. Zero means no cap.
+	RetentionMaxRecords int `yaml:"retention-max-records,omitempty" json:"retention-max-records,omitempty"`
+	// RedactSensitiveFields enables automatic redaction of sensitive fields from
+	// request bodies before hashing. The candidate endpoint still receives the original.
+	RedactSensitiveFields bool `yaml:"redact-sensitive-fields,omitempty" json:"redact-sensitive-fields,omitempty"`
+	// RedactCustomPatterns allows additional regex patterns for custom redaction.
+	RedactCustomPatterns []string `yaml:"redact-custom-patterns,omitempty" json:"redact-custom-patterns,omitempty"`
 }
 
 // ShadowMirrorConfig configures one shadow mirroring rule.

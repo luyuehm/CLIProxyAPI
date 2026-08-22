@@ -1016,3 +1016,195 @@ func TestEvalStoreStatsWithNoRecords(t *testing.T) {
 		t.Fatal("expected nil stats")
 	}
 }
+
+// ---- Compliance tests ----
+
+// TestRedactSensitiveData verifies that sensitive fields are redacted from JSON bodies.
+func TestRedactSensitiveData(t *testing.T) {
+	input := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}],"api_key":"sk-abc123","password":"supersecret","token":"my-token-123","headers":{"authorization":"Bearer xxx"}}`)
+	redacted := shadow.RedactSensitiveData(input, nil)
+
+	for _, s := range []string{"sk-abc123", "supersecret", "my-token-123", "Bearer xxx"} {
+		if containsStr(string(redacted), s) {
+			t.Errorf("expected %q to be redacted, got %s", s, string(redacted))
+		}
+	}
+
+	if !containsStr(string(redacted), "gpt-4") {
+		t.Error("expected model to be preserved")
+	}
+	if !containsStr(string(redacted), "hello") {
+		t.Error("expected message content to be preserved")
+	}
+}
+
+// TestRedactSensitiveDataEmailPhone tests that emails and phones are redacted.
+func TestRedactSensitiveDataEmailPhone(t *testing.T) {
+	input := []byte(`{"content":"user@example.com called +1-555-123-4567 from 192.168.1.1"}`)
+	redacted := string(shadow.RedactSensitiveData(input, nil))
+
+	if containsStr(redacted, "user@example.com") {
+		t.Error("expected email to be redacted")
+	}
+	if containsStr(redacted, "+1-555-123-4567") {
+		t.Error("expected phone to be redacted")
+	}
+	if containsStr(redacted, "192.168.1.1") {
+		t.Error("expected IP to be redacted")
+	}
+}
+
+// TestRedactSensitiveDataNoOpOnNonJSON tests that non-JSON bodies pass through unchanged.
+func TestRedactSensitiveDataNoOpOnNonJSON(t *testing.T) {
+	input := []byte("hello world plain text")
+	redacted := shadow.RedactSensitiveData(input, nil)
+	if string(redacted) != string(input) {
+		t.Errorf("expected non-JSON to pass through unchanged, got %s", string(redacted))
+	}
+}
+
+// TestRedactSensitiveDataEmptyBody tests that empty body is handled gracefully.
+func TestRedactSensitiveDataEmptyBody(t *testing.T) {
+	redacted := shadow.RedactSensitiveData(nil, nil)
+	if redacted != nil {
+		t.Error("expected nil for nil input")
+	}
+	redacted = shadow.RedactSensitiveData([]byte{}, nil)
+	if len(redacted) != 0 {
+		t.Error("expected empty for empty input")
+	}
+}
+
+// TestRedactSensitiveDataCustomPattern tests custom regex patterns.
+func TestRedactSensitiveDataCustomPattern(t *testing.T) {
+	input := []byte(`{"content":"my tax-id is 123-45-6789"}`)
+	patterns := []string{`\d{3}-\d{2}-\d{4}`}
+	redacted := string(shadow.RedactSensitiveData(input, patterns))
+
+	if containsStr(redacted, "123-45-6789") {
+		t.Error("expected SSN pattern to be redacted")
+	}
+}
+
+// TestEvalStoreRetentionTTL verifies that records older than the TTL are pruned.
+func TestEvalStoreRetentionTTL(t *testing.T) {
+	store := shadow.NewEvalStoreWithRetention(10, 100*time.Millisecond)
+	now := time.Now()
+
+	store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Timestamp: now, Similarity: 0.95})
+	if store.Len() != 1 {
+		t.Fatalf("expected 1 record, got %d", store.Len())
+	}
+
+	old := now.Add(-time.Hour)
+	store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Timestamp: old, Similarity: 0.90})
+	if store.Len() != 1 {
+		t.Fatalf("expected 1 record after pruning expired, got %d", store.Len())
+	}
+}
+
+// TestEvalStoreRetentionTTLZeroTimestamp tests that records without timestamps
+// are not affected by TTL pruning.
+func TestEvalStoreRetentionTTLZeroTimestamp(t *testing.T) {
+	store := shadow.NewEvalStoreWithRetention(10, 100*time.Millisecond)
+	store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Similarity: 0.95})
+	store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Similarity: 0.90})
+	if store.Len() != 2 {
+		t.Fatalf("expected 2 records (no timestamp = no TTL pruning), got %d", store.Len())
+	}
+}
+
+// TestEvalStoreMaxRecords verifies that the store respects the max records limit.
+func TestEvalStoreMaxRecords(t *testing.T) {
+	store := shadow.NewEvalStoreWithCapacity(100)
+	store.SetMaxRecords(5)
+
+	for i := 0; i < 10; i++ {
+		store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Timestamp: time.Now(), Similarity: float64(i) / 10})
+	}
+	if store.Len() != 5 {
+		t.Fatalf("expected 5 records after max-records pruning, got %d", store.Len())
+	}
+}
+
+// TestEvalStorePruneToMaxRecords verifies the explicit PruneToMaxRecords method.
+func TestEvalStorePruneToMaxRecords(t *testing.T) {
+	store := shadow.NewEvalStoreWithCapacity(100)
+	for i := 0; i < 20; i++ {
+		store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Timestamp: time.Now(), Similarity: 0.9})
+	}
+	store.PruneToMaxRecords(5)
+	if store.Len() != 5 {
+		t.Fatalf("expected 5 records after prune, got %d", store.Len())
+	}
+}
+
+// TestRedactSensitiveDataNestedJSON tests that nested sensitive fields are redacted.
+func TestRedactSensitiveDataNestedJSON(t *testing.T) {
+	input := []byte(`{"config":{"api_key":"sk-secret","auth":{"token":"abc123"}},"data":[{"secret":"xyz"}]}`)
+	redacted := string(shadow.RedactSensitiveData(input, nil))
+
+	if containsStr(redacted, "sk-secret") {
+		t.Error("expected nested api_key to be redacted")
+	}
+	if containsStr(redacted, "abc123") {
+		t.Error("expected nested token to be redacted")
+	}
+	if containsStr(redacted, "xyz") {
+		t.Error("expected nested secret to be redacted")
+	}
+}
+
+// TestShadowConfigNewOptions tests that the new config fields are accepted.
+func TestShadowConfigNewOptions(t *testing.T) {
+	cfg := shadow.Config{
+		Enabled:               true,
+		RetentionMinutes:      60,
+		RetentionMaxRecords:   100,
+		RedactSensitiveFields: true,
+		RedactCustomPatterns:  []string{`\d{3}-\d{2}-\d{4}`},
+	}
+	cfg.Defaults()
+	engine := shadow.NewEngine(cfg)
+	if engine == nil {
+		t.Fatal("expected non-nil engine")
+	}
+	engine.Start()
+	engine.Stop()
+}
+
+// TestEvalStoreRetentionDisabled verifies that zero TTL means no pruning.
+func TestEvalStoreRetentionDisabled(t *testing.T) {
+	store := shadow.NewEvalStoreWithRetention(10, 0)
+	now := time.Now()
+	store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Timestamp: now.Add(-24 * time.Hour)})
+	store.Push(&shadow.Record{Model: "gpt-4", Candidate: "deepseek-v3", Timestamp: now})
+	if store.Len() != 2 {
+		t.Fatalf("expected 2 records (no TTL), got %d", store.Len())
+	}
+}
+
+// TestRedactSensitiveDataKeySuffixes tests that keys ending with sensitive suffixes are caught.
+func TestRedactSensitiveDataKeySuffixes(t *testing.T) {
+	input := []byte(`{"my_secret_key":"abc123","my_api_key":"xyz789","my-password":"secret1"}`)
+	redacted := string(shadow.RedactSensitiveData(input, nil))
+
+	if containsStr(redacted, "abc123") {
+		t.Error("expected key-suffixed value to be redacted")
+	}
+	if containsStr(redacted, "xyz789") {
+		t.Error("expected api_key suffix value to be redacted")
+	}
+	if containsStr(redacted, "secret1") {
+		t.Error("expected password value to be redacted")
+	}
+}
+
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

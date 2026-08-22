@@ -7,12 +7,16 @@ import (
 
 // EvalStore is a bounded, thread-safe in-memory ledger of shadow evaluation records.
 // It retains the most recent N records and drops older ones on overflow.
+// Optional TTL-based pruning removes records older than retainTTL.
+// Optional max-records pruning keeps the store at or below the given count.
 type EvalStore struct {
-	mu    sync.RWMutex
-	items []*Record
-	cap   int
-	next  int // insertion index for ring-buffer mode
-	full  bool
+	mu        sync.RWMutex
+	items     []*Record
+	cap       int
+	next      int // insertion index for ring-buffer mode
+	full      bool
+	retainTTL time.Duration // zero means no TTL pruning
+	maxRecs   int           // zero means no count cap
 }
 
 // NewEvalStore creates a store with default capacity.
@@ -31,8 +35,30 @@ func NewEvalStoreWithCapacity(cap int) *EvalStore {
 	}
 }
 
+// NewEvalStoreWithRetention creates a store that prunes records older than ttl.
+func NewEvalStoreWithRetention(cap int, ttl time.Duration) *EvalStore {
+	s := NewEvalStoreWithCapacity(cap)
+	s.retainTTL = ttl
+	return s
+}
+
+// SetRetention configures TTL-based pruning. A non-positive TTL disables it.
+func (s *EvalStore) SetRetention(ttl time.Duration) {
+	s.mu.Lock()
+	s.retainTTL = ttl
+	s.mu.Unlock()
+}
+
+// SetMaxRecords configures the max record count limit. A non-positive value disables it.
+func (s *EvalStore) SetMaxRecords(max int) {
+	s.mu.Lock()
+	s.maxRecs = max
+	s.mu.Unlock()
+}
+
 // Push inserts a record. Thread-safe and O(1). Older records are evicted when
-// the store is full.
+// the store is full. Records older than retainTTL are pruned after insertion;
+// max-records pruning reduces the count to at most maxRecs after insertion.
 func (s *EvalStore) Push(rec *Record) {
 	if rec == nil {
 		return
@@ -49,14 +75,91 @@ func (s *EvalStore) Push(rec *Record) {
 	if s.next == 0 {
 		s.full = true
 	}
+
+	// Prune after insertion so the newly-inserted record is also evaluated.
+	if s.retainTTL > 0 {
+		s.pruneExpiredLocked(time.Now().Add(-s.retainTTL))
+	}
+	if s.maxRecs > 0 {
+		s.pruneToMaxRecordsLocked(s.maxRecs)
+	}
 }
 
-// Recent returns the most recent N records in reverse chronological order.
-// When N <= 0 or N > cap, all stored records are returned.
+// pruneExpiredLocked removes records older than the given cutoff, compacting
+// the ring buffer in place. Caller must hold the write lock.
+func (s *EvalStore) pruneExpiredLocked(cutoff time.Time) {
+	count := s.count()
+	if count == 0 {
+		return
+	}
+	// Collect all valid records and filter expired ones.
+	all := s.recentUnsafe(count) // newest first
+	kept := make([]*Record, 0, len(all))
+	for _, r := range all {
+		if r != nil && !r.Timestamp.IsZero() && r.Timestamp.Before(cutoff) {
+			continue // expired
+		}
+		kept = append(kept, r)
+	}
+	s.rebuild(kept)
+}
+
+// PruneToMaxRecords removes the oldest records until the store has at most
+// maxRecords entries. No-op when maxRecords <= 0 or current count is already
+// within the limit.
+func (s *EvalStore) PruneToMaxRecords(maxRecords int) {
+	if maxRecords <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneToMaxRecordsLocked(maxRecords)
+}
+
+// pruneToMaxRecordsLocked removes the oldest records while under the write lock.
+func (s *EvalStore) pruneToMaxRecordsLocked(maxRecords int) {
+	count := s.count()
+	if count <= maxRecords {
+		return
+	}
+	all := s.recentUnsafe(count) // newest first
+	if len(all) <= maxRecords {
+		return
+	}
+	kept := all[:maxRecords]
+	s.rebuild(kept)
+}
+
+// rebuild resets the ring buffer from the given record slice (newest first, as
+// returned by recentUnsafe). Caller must hold the write lock.
+func (s *EvalStore) rebuild(records []*Record) {
+	for i := range s.items {
+		s.items[i] = nil
+	}
+	s.next = 0
+	s.full = false
+	// Reverse to insertion order (oldest first).
+	for i := len(records) - 1; i >= 0; i-- {
+		s.items[s.next] = records[i]
+		s.next++
+	}
+	if s.next >= s.cap {
+		s.full = true
+		s.next = 0
+	}
+}
+
+// Recent returns the most recent N records in reverse chronological order
+// (newest first). When N <= 0 or N > cap, all stored records are returned.
 func (s *EvalStore) Recent(n int) []*Record {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.recentUnsafe(n)
+}
 
+// recentUnsafe returns recent records walking backwards from the last write
+// cursor. The caller must hold at least a read lock.
+func (s *EvalStore) recentUnsafe(n int) []*Record {
 	count := s.count()
 	if n <= 0 || n > count {
 		n = count
@@ -65,51 +168,24 @@ func (s *EvalStore) Recent(n int) []*Record {
 		return nil
 	}
 
+	// Last written index (newest record). When next == 0 (full, wrapped
+	// exactly), the newest record sits at cap-1.
+	start := s.next - 1
+	if start < 0 {
+		start = s.cap - 1
+	}
+
 	out := make([]*Record, 0, n)
-	idx := s.prevIndex(1)
 	for i := 0; i < n; i++ {
+		idx := start - i
+		for idx < 0 {
+			idx += s.cap
+		}
+		idx %= s.cap
 		if s.items[idx] == nil {
 			break
 		}
 		out = append(out, s.items[idx])
-		idx = s.prevIndex(s.cap - (n - i - 1))
-		// simpler: walk backwards
-	}
-	return s.recentUnsafe(n)
-}
-
-// recentUnsafe returns recent records walking backwards from the write cursor.
-func (s *EvalStore) recentUnsafe(n int) []*Record {
-	count := s.count()
-	if n > count {
-		n = count
-	}
-	if n <= 0 {
-		return nil
-	}
-
-	out := make([]*Record, 0, n)
-	idx := s.next
-	if !s.full && idx == 0 {
-		return nil
-	}
-	if s.full {
-		idx = s.next
-	} else {
-		idx = s.next - 1
-	}
-
-	for i := 0; i < n; i++ {
-		if idx < 0 {
-			idx = s.cap - 1
-		}
-		if s.items[idx] == nil {
-			break
-		}
-		if s.items[idx] != nil {
-			out = append(out, s.items[idx])
-		}
-		idx--
 	}
 	return out
 }

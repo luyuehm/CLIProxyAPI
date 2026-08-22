@@ -33,9 +33,16 @@ type Engine struct {
 // Call Start() before use.
 func NewEngine(cfg Config) *Engine {
 	cfg.Defaults()
+	store := NewEvalStoreWithCapacity(5000)
+	if cfg.RetentionMinutes > 0 {
+		store.SetRetention(time.Duration(cfg.RetentionMinutes) * time.Minute)
+	}
+	if cfg.RetentionMaxRecords > 0 {
+		store.SetMaxRecords(cfg.RetentionMaxRecords)
+	}
 	e := &Engine{
 		cfg:   cfg,
-		store: NewEvalStore(),
+		store: store,
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
@@ -169,6 +176,14 @@ func (e *Engine) evaluateMirror(target *MirrorTarget) {
 	// We use a truncated JSON keys-only fingerprint for the similarity comparison.
 	primaryBody := target.Body
 
+	// The candidate endpoint receives the original unredacted payload (req is
+	// already built above). For the record, hash a redacted copy of the body so
+	// sensitive content (API keys, emails, tokens) never persists in the ledger.
+	recordBody := primaryBody
+	if e.cfg.RedactSensitiveFields {
+		recordBody = RedactSensitiveData(primaryBody, e.cfg.RedactCustomPatterns)
+	}
+
 	resp, err := e.client.Do(req)
 	if err != nil {
 		rec := &Record{
@@ -176,7 +191,7 @@ func (e *Engine) evaluateMirror(target *MirrorTarget) {
 			Model:       target.Rule.Model,
 			Candidate:   target.Rule.Candidate,
 			Timestamp:   start,
-			PromptHash:  shortHash(primaryBody),
+			PromptHash:  shortHash(recordBody),
 			Error:       fmt.Sprintf("candidate request failed: %v", err),
 			PrimaryTTFT: 0,
 		}
@@ -193,7 +208,7 @@ func (e *Engine) evaluateMirror(target *MirrorTarget) {
 		Model:          target.Rule.Model,
 		Candidate:      target.Rule.Candidate,
 		Timestamp:      start,
-		PromptHash:     shortHash(primaryBody),
+		PromptHash:     shortHash(recordBody),
 		PrimaryTTFT:    0, // filled by caller
 		CandidateTTFT:  float64(elapsed.Milliseconds()),
 		LatencyDeltaMs: float64(elapsed.Milliseconds()),

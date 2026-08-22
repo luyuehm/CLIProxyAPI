@@ -8,6 +8,9 @@
 package shadow
 
 import (
+	"encoding/json"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -68,6 +71,20 @@ type Config struct {
 	Mirrors []MirrorConfig `json:"mirrors,omitempty"`
 	// Canaries is the list of canary release rules.
 	Canaries []CanaryConfig `json:"canaries,omitempty"`
+	// RetentionMinutes is the evaluation record retention TTL.
+	// Records older than this are pruned during Push. Zero means no TTL pruning.
+	RetentionMinutes int `json:"retention-minutes,omitempty"`
+	// RetentionMaxRecords is the hard cap on evaluation records after pruning.
+	// Zero means no record cap (ring-buffer capacity still applies).
+	RetentionMaxRecords int `json:"retention-max-records,omitempty"`
+	// RedactSensitiveFields enables automatic redaction of sensitive fields
+	// (API keys, passwords, tokens, emails, etc.) from request bodies before
+	// hashing for similarity comparison. The candidate endpoint still receives
+	// the original unredacted payload.
+	RedactSensitiveFields bool `json:"redact-sensitive-fields,omitempty"`
+	// RedactCustomPatterns allows additional regex patterns for custom redaction.
+	// Each pattern is applied as a case-insensitive regex to JSON string values.
+	RedactCustomPatterns []string `json:"redact-custom-patterns,omitempty"`
 }
 
 // Defaults fills unset tunables with safe production defaults.
@@ -102,6 +119,137 @@ const (
 	EvalKindMirror EvalKind = "mirror"
 	EvalKindCanary EvalKind = "canary"
 )
+
+// RedactSensitiveData redacts known sensitive fields from a JSON request body
+// for hashing and storage purposes. The original payload is not modified.
+// Patterns: API keys, passwords, tokens, email addresses, phone numbers, IPs, URLs.
+func RedactSensitiveData(body []byte, customPatterns []string) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	// Parse and re-serialize to redact known sensitive keys in the JSON.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		// Not JSON or parse error — return original body.
+		return body
+	}
+	redactJSONMap(raw, 0, customPatterns)
+	out, _ := json.Marshal(raw)
+	return out
+}
+
+// redactJSONMap recursively redacts sensitive string values in a JSON map.
+func redactJSONMap(m map[string]json.RawMessage, depth int, customPatterns []string) {
+	if depth > 10 {
+		return
+	}
+	for k, v := range m {
+		// Check if this key looks sensitive.
+		if isSensitiveKey(k) {
+			m[k] = json.RawMessage(`"[REDACTED]"`)
+			continue
+		}
+		// Try to parse as nested map.
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(v, &nested); err == nil && nested != nil {
+			redactJSONMap(nested, depth+1, customPatterns)
+			// Re-marshal the updated nested map back into the parent.
+			b, _ := json.Marshal(nested)
+			m[k] = json.RawMessage(b)
+			continue
+		}
+		// Try array.
+		var arr []json.RawMessage
+		if err := json.Unmarshal(v, &arr); err == nil && arr != nil {
+			redactJSONArray(arr, depth+1, customPatterns)
+			b, _ := json.Marshal(arr)
+			m[k] = json.RawMessage(b)
+			continue
+		}
+		// Try string value.
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			redacted := redactStringValue(s, customPatterns)
+			if redacted != s {
+				m[k] = json.RawMessage(`"` + jsonEscape(redacted) + `"`)
+			}
+		}
+	}
+}
+
+func redactJSONArray(arr []json.RawMessage, depth int, customPatterns []string) {
+	if depth > 10 {
+		return
+	}
+	for i, v := range arr {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(v, &nested); err == nil && nested != nil {
+			redactJSONMap(nested, depth+1, customPatterns)
+			b, _ := json.Marshal(nested)
+			arr[i] = json.RawMessage(b)
+			continue
+		}
+		var innerArr []json.RawMessage
+		if err := json.Unmarshal(v, &innerArr); err == nil && innerArr != nil {
+			redactJSONArray(innerArr, depth+1, customPatterns)
+			b, _ := json.Marshal(innerArr)
+			arr[i] = json.RawMessage(b)
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			redacted := redactStringValue(s, customPatterns)
+			if redacted != s {
+				arr[i] = json.RawMessage(`"` + jsonEscape(redacted) + `"`)
+			}
+		}
+	}
+}
+
+// isSensitiveKey checks if a JSON key name indicates sensitive content.
+func isSensitiveKey(key string) bool {
+	lk := strings.ToLower(key)
+	return lk == "api_key" || lk == "apikey" || lk == "api-key" ||
+		lk == "password" || lk == "passwd" || lk == "secret" ||
+		lk == "token" || lk == "access_token" || lk == "access-token" ||
+		strings.HasSuffix(lk, "key") || strings.HasSuffix(lk, "secret") ||
+		strings.HasSuffix(lk, "token") || lk == "authorization" ||
+		lk == "auth" || lk == "credential" || lk == "credentials" ||
+		strings.HasSuffix(lk, "password") || strings.HasSuffix(lk, "api_key")
+}
+
+// redactStringValue applies email/phone/IP/URL pattern redaction to a string value.
+func redactStringValue(s string, customPatterns []string) string {
+	// Email pattern
+	reEmail := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+	s = reEmail.ReplaceAllString(s, "[REDACTED-EMAIL]")
+	// Phone pattern (basic: digits with optional +()- separators, 7-15 chars)
+	rePhone := regexp.MustCompile(`\+?\d[\d\s\-().]{6,14}\d`)
+	s = rePhone.ReplaceAllString(s, "[REDACTED-PHONE]")
+	// IP address
+	reIP := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	s = reIP.ReplaceAllString(s, "[REDACTED-IP]")
+	// URL pattern (skip obvious API paths)
+	reURL := regexp.MustCompile(`https?://[^\s"']+`)
+	s = reURL.ReplaceAllString(s, "[REDACTED-URL]")
+	// Custom patterns
+	for _, pat := range customPatterns {
+		if re, err := regexp.Compile(pat); err == nil {
+			s = re.ReplaceAllString(s, "[REDACTED-CUSTOM]")
+		}
+	}
+	return s
+}
+
+// jsonEscape escapes a string for safe JSON embedding.
+func jsonEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
 
 // Record is one evaluation result stored in the ledger.
 type Record struct {
