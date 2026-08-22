@@ -11,9 +11,13 @@ import (
 // runtime shadow engine configuration.
 func convertShadowConfig(cfg config.ShadowConfig) shadow.Config {
 	out := shadow.Config{
-		Enabled:     cfg.Enabled,
-		QueueSize:   cfg.QueueSize,
-		WorkerCount: cfg.WorkerCount,
+		Enabled:              cfg.Enabled,
+		QueueSize:            cfg.QueueSize,
+		WorkerCount:          cfg.WorkerCount,
+		RetentionMinutes:     cfg.RetentionMinutes,
+		RetentionMaxRecords:  cfg.RetentionMaxRecords,
+		RedactSensitiveFields: cfg.RedactSensitiveFields,
+		RedactCustomPatterns: cfg.RedactCustomPatterns,
 	}
 	if cfg.TimeoutSeconds > 0 {
 		out.Timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
