@@ -783,3 +783,31 @@ nonstream-keepalive-interval: 0
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
+
+# Enterprise shadow evaluation mode: mirror production traffic to candidate models
+# for quality/latency/cost comparison, and control canary release weights.
+# shadow:
+#   enabled: true
+#   queue-size: 256
+#   worker-count: 4
+#   timeout-seconds: 30
+#   mirrors:
+#     - model: "gpt-4o"
+#       candidate: "deepseek-v3"
+#       ratio: 0.1  # 10% of matching requests are mirrored
+#       endpoint: "https://api.deepseek.com/v1"
+#       api-key: "sk-..."
+#     - model: "claude-sonnet-4"
+#       candidate: "gemini-2.5-pro"
+#       ratio: 0.05
+#       endpoint: "https://generativelanguage.googleapis.com/v1"
+#       api-key: "AIza..."
+#   canaries:
+#     - model: "gpt-4o"
+#       candidate: "deepseek-v3"
+#       weight: 0       # 0-100, percentage of traffic to route to candidate
+#       provider: "openai"
+#       headers:
+#         X-Canary: "true"
+#       user-id-header: "X-Team-ID"
+#       user-ids: ["engineering", "research"]

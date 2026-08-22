@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/shadow"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -52,6 +53,9 @@ type Server struct {
 	// handlers contains the API handlers for processing requests.
 	handlers         *handlers.BaseAPIHandler
 	codexLiveHandler *codexlive.Handler
+
+	// shadowHandler serves the enterprise shadow evaluation and canary control API.
+	shadowHandler *shadow.APIHandler
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
@@ -200,6 +204,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	auth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 	applySignatureCacheConfig(nil, cfg)
+	// Initialize the enterprise shadow evaluation engine.
+	s.initShadowHandler(cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
@@ -390,10 +396,24 @@ func (s *Server) Stop(ctx context.Context) error {
 	if s.codexLiveHandler != nil {
 		s.codexLiveHandler.Close()
 	}
+	if s.shadowHandler != nil {
+		s.shadowHandler.Stop()
+	}
 	if errShutdown != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)
 	}
 
 	log.Debug("API server stopped")
 	return nil
+}
+
+// initShadowHandler initializes the shadow evaluation engine from config.
+func (s *Server) initShadowHandler(cfg *config.Config) {
+	if cfg == nil || !cfg.ShadowConfig.Enabled {
+		return
+	}
+	shadowCfg := convertShadowConfig(cfg.ShadowConfig)
+	s.shadowHandler = shadow.NewAPIHandler(shadowCfg)
+	s.shadowHandler.Start()
+	log.Info("shadow: enterprise evaluation engine initialized")
 }
