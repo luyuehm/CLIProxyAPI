@@ -1,0 +1,25 @@
+# ──────────────────────────────────────────────────────────────────────
+#  AI Gateway Enterprise — CPA config.yaml 模板
+#  使用前复制此文件为 config.yaml，填入 remote-management.secret-key
+#  （必须与 .env 中 CPA_MANAGEMENT_KEY 一致）
+# ──────────────────────────────────────────────────────────────────────
+
+# 核心引擎监听端口
+port: 8317
+
+# 认证文件目录（挂载到 cpa-auth volume，持久化 OAuth 登录凭据）
+auth-dir: /root/.cli-proxy-api
+
+# ── 管理 API（KEEPER 通过此接口管理 API Key / 拉取用量） ──────────
+remote-management:
+  allow-remote: true
+  # ⚠ 必填：必须与 .env 中 CPA_MANAGEMENT_KEY 完全一致
+  secret-key: ""
+
+# 用量统计（KEEPER 通过 CPA 的 RESP 协议订阅用量数据）
+usage-statistics-enabled: true
+redis-usage-queue-retention-seconds: 60
+
+# ── 日志 ───────────────────────────────────────────────────────────
+logging-to-file: true
+error-logs-max-files: 10

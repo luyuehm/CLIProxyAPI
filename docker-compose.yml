@@ -1,0 +1,70 @@
+# ──────────────────────────────────────────────────────────────────────
+#  AI Gateway Enterprise — Docker Compose
+#  CPA (核心引擎) + KEEPER (用量监控)
+# ──────────────────────────────────────────────────────────────────────
+#  使用方式:
+#    1. 编辑 enterprise/config.yaml，设置 remote-management.secret-key
+#    2. 复制 .env.example → .env，填入 LICENSE_KEY/LOGIN_PASSWORD
+#       CPA_MANAGEMENT_KEY 必须与 config.yaml 中的 secret-key 一致
+#    3. docker compose up -d
+#    4. 访问 http://<host-ip>:4320 进入管理面板（默认 0.0.0.0 绑定，可从其他机器访问）
+# ──────────────────────────────────────────────────────────────────────
+
+x-common: &common
+  restart: unless-stopped
+  stop_grace_period: 30s
+
+services:
+  # ── CPA (核心路由引擎) ───────────────────────────────────────────
+  cpa:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: ai-gateway-cpa
+    <<: *common
+    ports:
+      - "0.0.0.0:${CPA_PORT:-8317}:8317"
+    environment:
+      - LICENSE_KEY=${LICENSE_KEY:?LICENSE_KEY is required}
+      - LICENSE_SERVER_URL=${LICENSE_SERVER_URL:-}
+      # 日志目录（挂载到 cpa-logs volume）
+      - WRITABLE_PATH=/var/log/cpa
+    volumes:
+      # RIC-303: KEEPER 路由配置页通过 management API 读写 config.yaml；
+      # 必须挂载为 rw，否则 PUT /v0/management/config.yaml 写入失败。
+      - ./config.yaml:/etc/cpa/config.yaml:rw
+      - ./docker-entrypoint.sh:/docker-entrypoint.sh:ro
+      - cpa-auth:/root/.cli-proxy-api
+      - cpa-logs:/var/log/cpa
+    entrypoint: ["/docker-entrypoint.sh"]
+    command: ["./CLIProxyAPI", "-config", "/etc/cpa/config.yaml"]
+    # 注：CPA 容器无 curl/wget，healthcheck 由外部脚本（install.sh/healthcheck.sh）完成
+
+  # ── KEEPER (用量监控面板) ───────────────────────────────────────
+  keeper:
+    build:
+      context: ../keeper
+      dockerfile: Dockerfile
+    container_name: ai-gateway-keeper
+    <<: *common
+    ports:
+      - "0.0.0.0:${KEEPER_PORT:-4320}:8080"
+    depends_on:
+      cpa:
+        condition: service_started
+    environment:
+      - APP_PORT=8080
+      - CPA_BASE_URL=http://cpa:8317
+      - CPA_MANAGEMENT_KEY=${CPA_MANAGEMENT_KEY:?CPA_MANAGEMENT_KEY is required}
+      - AUTH_ENABLED=true
+      - LOGIN_PASSWORD=${LOGIN_PASSWORD:?LOGIN_PASSWORD is required}
+      - WORK_DIR=/data
+      - REDIS_QUEUE_ADDR=cpa:8317
+    volumes:
+      - keeper-data:/data
+    # KEEPER's own Dockerfile already defines HEALTHCHECK
+
+volumes:
+  cpa-auth:
+  cpa-logs:
+  keeper-data:
