@@ -1,0 +1,405 @@
+.pageShell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.pageFrame {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.subtitle {
+  color: var(--text-secondary, #666);
+  margin: 4px 0 0;
+  font-size: 0.875rem;
+}
+
+.headerActions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.errorBox {
+  color: var(--color-error-text, #c41e1e);
+  font-size: 0.875rem;
+  padding: 8px 12px;
+  background: var(--color-error-bg, #fde8e8);
+  border-radius: 6px;
+}
+
+.loadingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  padding: 48px 0;
+  color: var(--text-secondary, #666);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.card {
+  width: 100%;
+}
+
+.tabBar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+.tab {
+  padding: 10px 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tabActive {
+  color: var(--text-primary, #333);
+  border-bottom-color: var(--color-primary, #1976d2);
+}
+
+.tab:hover {
+  color: var(--text-primary, #333);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.controlLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #666);
+}
+
+.notice {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.noticeSuccess {
+  background: var(--color-success-bg, #e6f7e6);
+  color: var(--color-success-text, #1a7a1a);
+}
+
+.noticeError {
+  background: var(--color-error-bg, #fde8e8);
+  color: var(--color-error-text, #c41e1e);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tableContainer {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.table th,
+.table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.table tbody tr:hover {
+  background: var(--color-row-hover, #f5f5f5);
+}
+
+.numericCol {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.emptyState {
+  text-align: center;
+  padding: 32px 0;
+  color: var(--text-secondary, #666);
+  font-size: 0.875rem;
+}
+
+.usageSummary {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.usageStat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usageStatLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--text-secondary, #666);
+  letter-spacing: 0.5px;
+}
+
+.usageStatValue {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.progressBarContainer {
+  position: relative;
+  height: 28px;
+  background: var(--color-progress-bg, #e8e8e8);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progressBar {
+  height: 100%;
+  background: var(--color-progress-fill, #4caf50);
+  border-radius: 14px;
+  transition: width 0.4s ease;
+  min-width: 0;
+}
+
+.progressBarDepartment {
+  background: var(--color-primary, #1976d2);
+}
+
+.progressBarUnassigned {
+  background: var(--color-progress-warning, #ff9800);
+}
+
+.progressLabel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-progress-label, #333);
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #666);
+  font-style: italic;
+}
+
+.ruleItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+  gap: 12px;
+}
+
+.ruleItem:last-child {
+  border-bottom: none;
+}
+
+.ruleInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.ruleName {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+
+.ruleMeta {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #666);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ruleTag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  background: var(--color-tag-bg, #e3f2fd);
+  color: var(--color-tag-text, #1565c0);
+}
+
+.ruleDisabled {
+  opacity: 0.5;
+}
+
+.ruleActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.formRow {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.formRow > * {
+  flex: 1;
+  min-width: 180px;
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.multiValueInput {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.multiValueInput textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.multiValueInput textarea:focus {
+  outline: none;
+  border-color: var(--color-primary, #1976d2);
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.15);
+}
+
+.multiValueHint {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #666);
+}
+
+.departmentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.departmentName {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.departmentCost {
+  font-weight: 700;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.departmentStats {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #666);
+  margin-bottom: 8px;
+}
+
+.departmentBar {
+  margin-bottom: 16px;
+}
+
+.confirmDelete {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.confirmDelete p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.ruleFilters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filterToggle {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color, #ccc);
+  background: var(--bg-primary, #fff);
+  cursor: pointer;
+  color: var(--text-secondary, #666);
+}
+
+.filterToggleActive {
+  background: var(--color-primary, #1976d2);
+  color: #fff;
+  border-color: var(--color-primary, #1976d2);
+}

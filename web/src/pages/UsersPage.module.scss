@@ -1,0 +1,222 @@
+@use '../styles/variables' as *;
+@use '../styles/mixins' as *;
+
+.pageShell {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 520px at 12% -8%, rgba($primary-color, 0.12), transparent 58%),
+    radial-gradient(880px 480px at 100% 0%, rgba(0, 0, 0, 0.06), transparent 52%),
+    var(--bg-secondary);
+  padding: 28px 20px 48px;
+
+  @include mobile {
+    padding: 18px 12px 32px;
+  }
+}
+
+.pageFrame {
+  width: min(1245px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--border-color);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--bg-primary) 84%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.08);
+}
+
+.headerActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+}
+
+.notice {
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+.noticeSuccess {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+}
+
+.noticeError {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+}
+
+.errorBox {
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+}
+
+.loadingRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 48px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.tableContainer {
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--bg-primary);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+
+  :global(.btn) {
+    white-space: nowrap;
+  }
+
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 14px;
+  }
+
+  th {
+    font-weight: 600;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-secondary) 60%, transparent);
+    position: sticky;
+    top: 0;
+  }
+
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody tr:hover {
+    background: color-mix(in srgb, var(--primary-color) 4%, transparent);
+  }
+}
+
+.emptyCell {
+  text-align: center;
+  padding: 32px 14px !important;
+  color: var(--text-muted);
+}
+
+.roleBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.roleBadgeAdmin {
+  background: color-mix(in srgb, #c65746 14%, transparent);
+  color: #c65746;
+}
+
+.roleBadgeOperator {
+  background: color-mix(in srgb, #6366f1 14%, transparent);
+  color: #6366f1;
+}
+
+.roleBadgeViewer {
+  background: color-mix(in srgb, #10b981 14%, transparent);
+  color: #10b981;
+}
+
+.apiKeyCell {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.statusActive {
+  color: #10b981;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.statusInactive {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  gap: 4px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.formField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.formLabel {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-primary);
+
+  input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary-color);
+  }
+}
