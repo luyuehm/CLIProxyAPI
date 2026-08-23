@@ -10,24 +10,28 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
-	"cpa-usage-keeper/internal/timeutil"
 
-	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
 type ServiceOptions struct {
-	RefreshWorkerLimit  int
-	AutoRefreshInterval time.Duration
+	RefreshWorkerLimit               int
+	UsageHeaderSnapshotFlushInterval time.Duration
+	PricingCatalog                   *pricing.Catalog
 }
 
 type Service struct {
 	db       *gorm.DB
 	registry ProviderRegistry
+	pricing  *pricing.Catalog
 
 	refreshMu    sync.Mutex
 	refreshTasks map[string]*RefreshTaskRecord
+	// resetInFlight 按 auth_index 记录正在消费的 reset credit，避免并发重复扣减官方次数。
+	resetMu       sync.Mutex
+	resetInFlight map[string]struct{}
 	// inspectionCompletedAt 只记录用户手动启动巡检后，该巡检轮次完成的时间。
 	inspectionCompletedAt       time.Time
 	inspectionRoundActive       bool
@@ -37,28 +41,35 @@ type Service struct {
 	refreshCooldown             func(time.Duration)
 	refreshContext              context.Context
 	refreshCancel               context.CancelFunc
-	// autoRefreshInterval 控制后台 runner 的 tick 周期。
-	autoRefreshInterval time.Duration
-	// autoRefreshActiveTTL 控制前端心跳失效前可继续自动刷新的时间窗。
-	autoRefreshActiveTTL time.Duration
-	// activeMu 保护 lastActiveStatusAt，避免 status 心跳和后台 runner 并发读写。
-	activeMu sync.Mutex
-	// lastActiveStatusAt 只保存在内存中，用来判断后台页面是否仍然活跃。
-	lastActiveStatusAt time.Time
 	// autoRefreshMu 保护 autoRefreshRunning，避免多个 tick 同时启动扫描。
 	autoRefreshMu sync.Mutex
 	// autoRefreshRunning 表示上一轮自动刷新还有 queued/running 任务未完全结束。
 	autoRefreshRunning bool
+	// autoRefreshSettingsChanged 用于设置保存后唤醒调度循环，使长周期配置变更不必等到旧触发时间。
+	autoRefreshSettingsChanged chan struct{}
+	// autoRefreshNow 和 autoRefreshDelay 仅用于调度器测试固定时间和跳过真实等待。
+	autoRefreshNow   func() time.Time
+	autoRefreshDelay func(context.Context, time.Duration) bool
 	// lastAutoRefreshAttemptAt 记录最近一次尝试启动整轮自动刷新的时间，用于扫描失败退避。
 	lastAutoRefreshAttemptAt time.Time
 	// lastAutoRefreshRoundAt 记录上次启动整轮 Auth Files 自动刷新入队的内存时间。
 	lastAutoRefreshRoundAt time.Time
 	// refreshLifecycleMu 保护 refreshClosing 和 refreshWG.Add，避免关闭等待期间继续登记后台 goroutine。
 	refreshLifecycleMu sync.Mutex
-	// refreshClosing 表示 App 正在关闭 quota 后台任务，后续心跳/刷新请求不能再派生新 goroutine。
+	// refreshClosing 表示 App 正在关闭 quota 后台任务，后续刷新请求不能再派生新 goroutine。
 	refreshClosing bool
-	// refreshWG 跟踪 service 派生的 dispatcher/worker/heartbeat goroutine，App 关闭 DB 前会等待它们退出。
+	// refreshWG 跟踪 service 派生的 dispatcher/worker/scheduler goroutine，App 关闭 DB 前会等待它们退出。
 	refreshWG sync.WaitGroup
+
+	usageHeaderPending       map[string]UsageHeaderSnapshot
+	usageHeaderWake          chan struct{}
+	usageHeaderStopCh        chan struct{}
+	usageHeaderDoneCh        chan struct{}
+	usageHeaderFlushInterval time.Duration
+	usageHeaderNewTimer      func(time.Duration) (<-chan time.Time, func())
+	usageHeaderMu            sync.Mutex
+	usageHeaderClosing       bool
+	usageHeaderCloseOnce     sync.Once
 }
 
 type CheckRequest struct {
@@ -66,20 +77,22 @@ type CheckRequest struct {
 }
 
 type CheckResponse struct {
-	ID    string     `json:"id"`
-	Quota []QuotaRow `json:"quota"`
+	ID                                  string            `json:"id"`
+	Quota                               []QuotaRow        `json:"quota"`
+	Subscription                        *SubscriptionInfo `json:"subscription,omitempty"`
+	RateLimitResetCreditsAvailableCount *int              `json:"rateLimitResetCreditsAvailableCount,omitempty"`
 }
 
-func NewService(db *gorm.DB, caller ManagementAPICaller) *Service {
-	return NewServiceWithOptions(db, caller, ServiceOptions{})
+func NewService(db *gorm.DB, caller ManagementAPICaller, pricingCatalog *pricing.Catalog) *Service {
+	return NewServiceWithOptions(db, caller, ServiceOptions{PricingCatalog: pricingCatalog})
 }
 
 func NewServiceWithOptions(db *gorm.DB, caller ManagementAPICaller, options ServiceOptions) *Service {
 	return NewServiceWithRegistryAndOptions(db, NewDefaultProviderRegistry(caller, DefaultProviderConfigs()), options)
 }
 
-func NewServiceWithRegistry(db *gorm.DB, registry ProviderRegistry) *Service {
-	return NewServiceWithRegistryAndOptions(db, registry, ServiceOptions{})
+func NewServiceWithRegistry(db *gorm.DB, registry ProviderRegistry, pricingCatalog *pricing.Catalog) *Service {
+	return NewServiceWithRegistryAndOptions(db, registry, ServiceOptions{PricingCatalog: pricingCatalog})
 }
 
 func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, options ServiceOptions) *Service {
@@ -90,23 +103,36 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 	if workerLimit > 100 {
 		workerLimit = 100
 	}
-	autoRefreshInterval := options.AutoRefreshInterval
-	if autoRefreshInterval <= 0 {
-		autoRefreshInterval = AutoRefreshInterval
+	usageHeaderFlushInterval := options.UsageHeaderSnapshotFlushInterval
+	if usageHeaderFlushInterval <= 0 {
+		usageHeaderFlushInterval = usageHeaderSnapshotFlushInterval
 	}
 	refreshContext, refreshCancel := context.WithCancel(context.Background())
-	return &Service{
-		db:                   db,
-		registry:             registry,
-		refreshTasks:         make(map[string]*RefreshTaskRecord),
-		refreshWorkerTokens:  make(chan struct{}, workerLimit),
-		refreshTaskTTL:       RefreshTransientTaskTTL,
-		refreshCooldown:      time.Sleep,
-		refreshContext:       refreshContext,
-		refreshCancel:        refreshCancel,
-		autoRefreshInterval:  autoRefreshInterval,
-		autoRefreshActiveTTL: AutoRefreshActiveTTL,
+	pricingCatalog := options.PricingCatalog
+	if pricingCatalog == nil {
+		panic("pricing catalog is required")
 	}
+	service := &Service{
+		db:                         db,
+		registry:                   registry,
+		pricing:                    pricingCatalog,
+		refreshTasks:               make(map[string]*RefreshTaskRecord),
+		resetInFlight:              make(map[string]struct{}),
+		refreshWorkerTokens:        make(chan struct{}, workerLimit),
+		refreshTaskTTL:             RefreshTransientTaskTTL,
+		refreshCooldown:            time.Sleep,
+		refreshContext:             refreshContext,
+		refreshCancel:              refreshCancel,
+		autoRefreshSettingsChanged: make(chan struct{}, 1),
+		usageHeaderPending:         make(map[string]UsageHeaderSnapshot, usageHeaderPendingIdentityLimit),
+		usageHeaderWake:            make(chan struct{}, 1),
+		usageHeaderStopCh:          make(chan struct{}),
+		usageHeaderDoneCh:          make(chan struct{}),
+		usageHeaderFlushInterval:   usageHeaderFlushInterval,
+		usageHeaderNewTimer:        newUsageHeaderTimer,
+	}
+	go service.runUsageHeaderSnapshotWorker()
+	return service
 }
 
 func (s *Service) SetRefreshContext(ctx context.Context) {
@@ -128,34 +154,6 @@ func (s *Service) SetRefreshContext(ctx context.Context) {
 	if previousCancel != nil {
 		// 替换父 context 时取消旧租约，避免旧 worker 继续挂在不可关闭的 context 上。
 		previousCancel()
-	}
-}
-
-func (s *Service) RecordActiveStatus(at time.Time) {
-	// nil service 直接返回，方便 API 层在测试或可选 provider 场景安全调用。
-	if s == nil {
-		return
-	}
-	// 心跳时间先归一化，后续 active TTL 和自动刷新间隔判断共用同一时间口径。
-	normalizedAt := timeutil.NormalizeStorageTime(at)
-	// 写入活跃时间前加锁，避免并发心跳和自动刷新判断产生数据竞争。
-	s.activeMu.Lock()
-	// wasActive 在更新时间前计算，用来判断这次心跳是否把后台页面从 inactive 拉回 active。
-	wasActive := !s.lastActiveStatusAt.IsZero() && normalizedAt.Sub(s.lastActiveStatusAt) <= s.autoRefreshActiveTTL
-	// 活跃时间按项目存储时间口径归一化，但只保存在内存中，不写数据库。
-	s.lastActiveStatusAt = normalizedAt
-	// 立即解锁，避免异步唤醒自动刷新时持有 activeMu 造成锁嵌套。
-	s.activeMu.Unlock()
-	// 只有从 inactive 变 active 的第一跳才尝试唤醒自动刷新，30s 续约心跳不会重复触发整轮扫描。
-	if !wasActive {
-		// 唤醒动作放到 goroutine，避免 status/active 接口被数据库扫描或 provider 队列阻塞。
-		refreshContext := s.refreshContextSnapshot()
-		s.startRefreshGoroutine(func() {
-			// RunAutoRefresh 内部还会检查上次整轮刷新时间，刚刚刷过时会直接跳过。
-			if err := s.RunAutoRefresh(refreshContext); err != nil {
-				logrus.Errorf("quota auto refresh failed after active heartbeat: %v", err)
-			}
-		})
 	}
 }
 
@@ -207,24 +205,8 @@ func (s *Service) StopRefreshTasks() {
 	if cancel != nil {
 		cancel()
 	}
+	s.stopUsageHeaderSnapshotWorker()
 	s.refreshWG.Wait()
-}
-
-func (s *Service) HasRecentActiveStatus(now time.Time) bool {
-	// nil service 没有后台活跃状态，自动刷新应当跳过。
-	if s == nil {
-		return false
-	}
-	// 读取活跃时间前加锁，和 RecordActiveStatus 的写入锁保持一致。
-	s.activeMu.Lock()
-	// defer 解锁，保证所有返回路径都会释放锁。
-	defer s.activeMu.Unlock()
-	// 从未收到前端心跳时视为无人查看后台页面。
-	if s.lastActiveStatusAt.IsZero() {
-		return false
-	}
-	// 当前时间同样归一化后再比较，保持 TTL 判断口径一致。
-	return timeutil.NormalizeStorageTime(now).Sub(s.lastActiveStatusAt) <= s.autoRefreshActiveTTL
 }
 
 func (s *Service) Check(ctx context.Context, request CheckRequest) (CheckResponse, error) {
@@ -251,10 +233,20 @@ func (s *Service) Check(ctx context.Context, request CheckRequest) (CheckRespons
 	if err != nil {
 		return CheckResponse{}, err
 	}
-	return CheckResponse{
-		ID:    authIndex,
-		Quota: NormalizeQuotaRows(providerOutput),
-	}, nil
+	response := CheckResponse{
+		ID:           authIndex,
+		Quota:        NormalizeQuotaRows(providerOutput),
+		Subscription: NormalizeSubscription(providerOutput),
+	}
+	// 实时结果没有套餐时仅允许回退当前 Identity metadata；现在只有 Codex 具备该来源。
+	if response.Subscription == nil {
+		response.Subscription = ResolveIdentitySubscription(identity)
+	}
+	// reset 次数跟随官方刷新结果写入同一份限额缓存，前端只展示缓存里的官方值。
+	if count, ok := rateLimitResetCreditsAvailableCount(providerOutput); ok {
+		response.RateLimitResetCreditsAvailableCount = count
+	}
+	return response, nil
 }
 
 func (s *Service) resolveQuotaHandler(provider string, identityType string) (string, ProviderHandler, bool) {
@@ -280,4 +272,22 @@ func resolveQuotaIdentityTypes(provider string, identityType string) []string {
 		candidates = append(candidates, normalized)
 	}
 	return candidates
+}
+
+func rateLimitResetCreditsAvailableCount(output ProviderOutput) (*int, bool) {
+	// 目前只有 Codex 返回 reset credit；其它 provider 保持字段缺省，避免误显示 reset 按钮。
+	switch result := output.Result.(type) {
+	case CodexResult:
+		if result.Usage == nil || result.Usage.RateLimitResetCredits == nil || result.Usage.RateLimitResetCredits.AvailableCount == nil {
+			return nil, false
+		}
+		return result.Usage.RateLimitResetCredits.AvailableCount, true
+	case *CodexResult:
+		if result == nil || result.Usage == nil || result.Usage.RateLimitResetCredits == nil || result.Usage.RateLimitResetCredits.AvailableCount == nil {
+			return nil, false
+		}
+		return result.Usage.RateLimitResetCredits.AvailableCount, true
+	default:
+		return nil, false
+	}
 }

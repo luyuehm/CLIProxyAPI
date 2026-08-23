@@ -36,6 +36,8 @@ import { OverviewRealtimePanel } from './OverviewRealtimePanel';
 const realtime: OverviewRealtimeBlock = {
   window: '15m',
   bucket_seconds: 30,
+  window_start: '2026-06-09T11:55:00Z',
+  window_end: '2026-06-09T12:10:00Z',
   token_velocity: [
     { bucket: '2026-06-09T11:55:00Z', tokens_per_minute: 120, tokens: 60, cost: 0.01 },
     { bucket: '2026-06-09T11:55:30Z', tokens_per_minute: 240, tokens: 120, cost: 0.02 },
@@ -51,8 +53,8 @@ const realtime: OverviewRealtimeBlock = {
         { bucket: '2026-06-09T11:55:30Z', avg_ms: 190 },
       ],
       particles: [
-        { bucket: '2026-06-09T11:55:00Z', ms: 120, count: 2 },
-        { bucket: '2026-06-09T11:55:30Z', ms: 230, count: 5 },
+        { bucket: '2026-06-09T11:55:00Z', timestamp: '2026-06-09T11:55:10Z', ms: 120, count: 2 },
+        { bucket: '2026-06-09T11:55:30Z', timestamp: '2026-06-09T11:55:41Z', ms: 230, count: 5 },
       ],
     },
     latency: {
@@ -61,8 +63,8 @@ const realtime: OverviewRealtimeBlock = {
         { bucket: '2026-06-09T11:55:30Z', avg_ms: 780 },
       ],
       particles: [
-        { bucket: '2026-06-09T11:55:00Z', ms: 520, count: 3 },
-        { bucket: '2026-06-09T11:55:30Z', ms: 940, count: 6 },
+        { bucket: '2026-06-09T11:55:00Z', timestamp: '2026-06-09T11:55:11Z', ms: 520, count: 3 },
+        { bucket: '2026-06-09T11:55:30Z', timestamp: '2026-06-09T11:55:44Z', ms: 940, count: 6 },
       ],
     },
   },
@@ -77,8 +79,8 @@ const realtime: OverviewRealtimeBlock = {
     { bucket: '2026-06-09T11:55:30Z', requests_per_minute: 4, requests: 2 },
   ],
   cache_level: [
-    { bucket: '2026-06-09T11:55:00Z', cache_rate: 25, cached_tokens: 10, input_tokens: 40 },
-    { bucket: '2026-06-09T11:55:30Z', cache_rate: 50, cached_tokens: 30, input_tokens: 60 },
+    { bucket: '2026-06-09T11:55:00Z', cache_read_rate: 25, cache_read_tokens: 10, cache_creation_tokens: 2, input_tokens: 40 },
+    { bucket: '2026-06-09T11:55:30Z', cache_read_rate: 50, cache_read_tokens: 30, cache_creation_tokens: 4, input_tokens: 60 },
   ],
 } as OverviewRealtimeBlock;
 
@@ -117,6 +119,9 @@ describe('OverviewRealtimePanel', () => {
     expect(html).toContain('usage_stats.overview_realtime_request_level');
     expect(html).toContain('usage_stats.overview_realtime_cache_level');
     expect(html).toContain('overviewRealtimeCardFull');
+    expect(html.match(/keeper-card-surface/g) ?? []).toHaveLength(6);
+    expect(html.match(/class="keeper-card-title-track"/g) ?? []).toHaveLength(6);
+    expect(html.match(/class="keeper-card-title"/g) ?? []).toHaveLength(6);
     expect(html).toContain('30m');
     expect(html).not.toMatch(/>5m<\/button>/);
     expect(html).toContain('usage_stats.overview_realtime_dimension_api_keys');
@@ -162,8 +167,8 @@ describe('OverviewRealtimePanel', () => {
             { bucket: '2026-06-09T11:55:30Z', requests_per_minute: 0, requests: 0 },
           ],
           cache_level: [
-            { bucket: '2026-06-09T11:55:00Z', cache_rate: null, cached_tokens: 0, input_tokens: 0 },
-            { bucket: '2026-06-09T11:55:30Z', cache_rate: null, cached_tokens: 0, input_tokens: 0 },
+            { bucket: '2026-06-09T11:55:00Z', cache_read_rate: null, cache_read_tokens: 0, cache_creation_tokens: 0, input_tokens: 0 },
+            { bucket: '2026-06-09T11:55:30Z', cache_read_rate: null, cache_read_tokens: 0, cache_creation_tokens: 0, input_tokens: 0 },
           ],
         }}
         loading={false}
@@ -239,14 +244,164 @@ describe('OverviewRealtimePanel', () => {
       'usage_stats.overview_realtime_ttft_average',
       'usage_stats.overview_realtime_ttft_distribution',
     ]);
+    expect(chartCapture.chartCalls[0].data.datasets[0].data).toEqual([
+      { x: Date.parse('2026-06-09T11:55:00Z'), y: 150 },
+      { x: Date.parse('2026-06-09T11:55:30Z'), y: 190 },
+    ]);
     expect(chartCapture.chartCalls[0].data.datasets[1].data).toEqual([
-      { x: '11:55', y: 120, count: 2 },
-      { x: '11:55:30', y: 230, count: 5 },
+      { x: Date.parse('2026-06-09T11:55:10Z'), y: 120, count: 2 },
+      { x: Date.parse('2026-06-09T11:55:41Z'), y: 230, count: 5 },
     ]);
     expect(chartCapture.chartCalls[1].data.datasets.map((dataset) => dataset.label)).toEqual([
       'usage_stats.overview_realtime_latency_average',
       'usage_stats.overview_realtime_latency_distribution',
     ]);
+    const ttftXAxis = chartCapture.chartCalls[0].options.scales?.x as { type?: string; min?: number; max?: number };
+    const latencyXAxis = chartCapture.chartCalls[1].options.scales?.x as { type?: string; min?: number; max?: number };
+    expect(ttftXAxis.type).toBe('linear');
+    expect(ttftXAxis.min).toBe(Date.parse('2026-06-09T11:55:00Z'));
+    expect(ttftXAxis.max).toBe(Date.parse('2026-06-09T12:10:00Z'));
+    expect(latencyXAxis.min).toBe(ttftXAxis.min);
+    expect(latencyXAxis.max).toBe(ttftXAxis.max);
+  });
+
+  it('uses data-driven logarithmic response axes per distribution chart', () => {
+    renderToStaticMarkup(
+      <OverviewRealtimePanel
+        realtime={{
+          ...realtime,
+          response_distribution: {
+            ttft: {
+              average_line: [
+                { bucket: '2026-06-09T11:55:00Z', avg_ms: 1200 },
+                { bucket: '2026-06-09T11:55:30Z', avg_ms: 5000 },
+              ],
+              particles: [
+                { bucket: '2026-06-09T11:55:00Z', ms: 800, count: 1 },
+                { bucket: '2026-06-09T11:55:30Z', ms: 30_000, count: 1 },
+              ],
+            },
+            latency: {
+              average_line: [
+                { bucket: '2026-06-09T11:55:00Z', avg_ms: 500 },
+                { bucket: '2026-06-09T11:55:30Z', avg_ms: 900 },
+              ],
+              particles: [
+                { bucket: '2026-06-09T11:55:00Z', ms: 300, count: 1 },
+                { bucket: '2026-06-09T11:55:30Z', ms: 1200, count: 1 },
+              ],
+            },
+          },
+        }}
+        loading={false}
+        window="15m"
+        onWindowChange={() => {}}
+        isDark={false}
+        isMobile={false}
+      />
+    );
+
+    const ttftYAxis = chartCapture.chartCalls[0].options.scales?.y as { type?: string; beginAtZero?: boolean; min?: number; max?: number };
+    const latencyYAxis = chartCapture.chartCalls[1].options.scales?.y as { type?: string; beginAtZero?: boolean; min?: number; max?: number };
+
+    expect(ttftYAxis.type).toBe('logarithmic');
+    expect(ttftYAxis.beginAtZero).toBeUndefined();
+    expect(ttftYAxis.min).toBeGreaterThan(0);
+    expect(ttftYAxis.max).toBeGreaterThan(30_000);
+    expect(latencyYAxis.type).toBe('logarithmic');
+    expect(latencyYAxis.beginAtZero).toBeUndefined();
+    expect(latencyYAxis.min).toBeGreaterThan(0);
+    expect(latencyYAxis.max).toBeLessThan(2_000);
+  });
+
+  it('omits non-positive response values from logarithmic distribution charts', () => {
+    const malformedRealtime = {
+      ...realtime,
+      response_distribution: {
+        ttft: {
+          average_line: [
+            null,
+            { bucket: '2026-06-09T11:55:00Z', avg_ms: 0 },
+            { bucket: '2026-06-09T11:55:30Z', avg_ms: -5 },
+            { bucket: '2026-06-09T11:56:00Z', avg_ms: 120 },
+          ],
+          particles: undefined,
+        },
+        latency: {
+          average_line: [
+            undefined,
+            { bucket: '2026-06-09T11:55:00Z', avg_ms: 0 },
+            { bucket: '2026-06-09T11:55:30Z', avg_ms: 800 },
+          ],
+          particles: [
+            { bucket: '2026-06-09T11:55:00Z', ms: 0, count: 1 },
+            { bucket: '2026-06-09T11:55:30Z', timestamp: '2026-06-09T11:55:42Z', ms: 900, count: 1 },
+          ],
+        },
+      },
+    } as unknown as OverviewRealtimeBlock;
+
+    renderToStaticMarkup(
+      <OverviewRealtimePanel
+        realtime={malformedRealtime}
+        loading={false}
+        window="15m"
+        onWindowChange={() => {}}
+        isDark={false}
+        isMobile={false}
+        timezone="UTC"
+      />
+    );
+
+    expect(chartCapture.chartCalls[0].data.datasets[0].data).toEqual([
+      { x: Date.parse('2026-06-09T11:55:00Z'), y: null },
+      { x: Date.parse('2026-06-09T11:55:30Z'), y: null },
+      { x: Date.parse('2026-06-09T11:56:00Z'), y: 120 },
+    ]);
+    expect(chartCapture.chartCalls[0].data.datasets[1].data).toEqual([]);
+    expect(chartCapture.chartCalls[1].data.datasets[0].data).toEqual([
+      { x: Date.parse('2026-06-09T11:55:00Z'), y: null },
+      { x: Date.parse('2026-06-09T11:55:30Z'), y: 800 },
+    ]);
+    expect(chartCapture.chartCalls[1].data.datasets[1].data).toEqual([
+      { x: Date.parse('2026-06-09T11:55:42Z'), y: 900, count: 1 },
+    ]);
+  });
+
+  it('keeps every response distribution particle visible', () => {
+    const start = Date.parse('2026-06-09T11:40:00Z');
+    const particles = Array.from({ length: 1_205 }, (_, index) => ({
+      bucket: new Date(start + index * 1000).toISOString(),
+      timestamp: new Date(start + index * 1000).toISOString(),
+      ms: index + 1,
+      count: 1,
+    }));
+
+    renderToStaticMarkup(
+      <OverviewRealtimePanel
+        realtime={{
+          ...realtime,
+          response_distribution: {
+            ...realtime.response_distribution,
+            ttft: {
+              average_line: realtime.response_distribution.ttft.average_line,
+              particles,
+            },
+          },
+        }}
+        loading={false}
+        window="15m"
+        onWindowChange={() => {}}
+        isDark={false}
+        isMobile={false}
+      />
+    );
+
+    const ttftParticleData = chartCapture.chartCalls[0].data.datasets[1].data as Array<{ y: number }>;
+
+    expect(ttftParticleData).toHaveLength(1_205);
+    expect(ttftParticleData[0].y).toBe(1);
+    expect(ttftParticleData[ttftParticleData.length - 1].y).toBe(1_205);
   });
 
   it('shows an error state before realtime data has loaded', () => {
@@ -307,8 +462,8 @@ describe('OverviewRealtimePanel', () => {
         { bucket: '2026-06-09T11:55:30Z', tokens_per_minute: 2000, tokens: 1000 },
       ],
       response_level: [
-        { bucket: '2026-06-09T11:55:00Z', ttft_p95_ms: 700, latency_p95_ms: 1500 },
-        { bucket: '2026-06-09T11:55:30Z', ttft_p95_ms: 900, latency_p95_ms: 2500 },
+        { bucket: '2026-06-09T11:55:00Z', ttft_p95_ms: 7000, latency_p95_ms: 15000 },
+        { bucket: '2026-06-09T11:55:30Z', ttft_p95_ms: 9000, latency_p95_ms: 25000 },
       ],
       response_distribution: {
         ttft: {
@@ -341,8 +496,20 @@ describe('OverviewRealtimePanel', () => {
 
     expect(html).toContain('2.00K/min');
     expect(html).toContain('1.50K/min');
+    expect(html).toContain('900ms');
+    expect(html).toContain('800ms');
     expect(html).toContain('2.5s');
     expect(html).toContain('2s');
+    expect(html).not.toContain('9s');
+    expect(html).not.toContain('25s');
+    expect(chartCapture.chartCalls[0].data.datasets[0].data).toEqual([
+      { x: Date.parse('2026-06-09T11:55:00Z'), y: 700 },
+      { x: Date.parse('2026-06-09T11:55:30Z'), y: 900 },
+    ]);
+    expect(chartCapture.chartCalls[1].data.datasets[0].data).toEqual([
+      { x: Date.parse('2026-06-09T11:55:00Z'), y: 1500 },
+      { x: Date.parse('2026-06-09T11:55:30Z'), y: 2500 },
+    ]);
   });
 
   it('keeps realtime response duration units fixed in non-English locales', async () => {
@@ -466,7 +633,7 @@ describe('OverviewRealtimePanel', () => {
     expect(chartCapture.chartCalls[1].options.spanGaps).toBeUndefined();
   });
 
-  it('keeps response axis linear and cache axis light', () => {
+  it('keeps response axis logarithmic and cache axis light', () => {
     renderToStaticMarkup(
       <OverviewRealtimePanel
         realtime={realtime}
@@ -481,9 +648,9 @@ describe('OverviewRealtimePanel', () => {
     const responseYAxis = chartCapture.chartCalls[0].options.scales?.y as { type?: string; beginAtZero?: boolean; min?: number; ticks?: { maxTicksLimit?: number } };
     const cacheYAxis = chartCapture.lineCalls[2].options.scales?.y as { ticks?: { maxTicksLimit?: number } };
 
-    expect(responseYAxis.type).toBeUndefined();
-    expect(responseYAxis.beginAtZero).toBe(true);
-    expect(responseYAxis.min).toBeUndefined();
+    expect(responseYAxis.type).toBe('logarithmic');
+    expect(responseYAxis.beginAtZero).toBeUndefined();
+    expect(responseYAxis.min).toBeGreaterThan(0);
     expect(responseYAxis.ticks?.maxTicksLimit).toBe(5);
     expect(cacheYAxis.ticks?.maxTicksLimit).toBe(5);
   });

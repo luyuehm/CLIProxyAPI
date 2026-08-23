@@ -1,0 +1,27 @@
+services:
+  cpa-usage-keeper:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: cpa-usage-keeper-enterprise
+    restart: unless-stopped
+    image: cpa-usage-keeper:enterprise
+    ports:
+      - "${APP_PORT:-4320}:4320"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - CPA_BASE_URL=${CPA_BASE_URL:?set CPA_BASE_URL}
+      - CPA_MANAGEMENT_KEY=${CPA_MANAGEMENT_KEY:?set CPA_MANAGEMENT_KEY}
+      - REDIS_QUEUE_ADDR=${REDIS_QUEUE_ADDR:-}
+      - APP_PORT=${APP_PORT:-4320}
+      - APP_BASE_PATH=${APP_BASE_PATH:-}
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+      - LOGIN_PASSWORD=${LOGIN_PASSWORD:?set LOGIN_PASSWORD}
+      - WORK_DIR=${WORK_DIR:-/data}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - keeper-enterprise-data:/data
+
+volumes:
+  keeper-enterprise-data:

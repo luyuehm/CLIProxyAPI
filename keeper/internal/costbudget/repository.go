@@ -88,20 +88,18 @@ func periodUsageCost(db *gorm.DB, start, end time.Time) (spent float64, costAvai
 		requiresPricing := helper.UsageTokenInputRequiresPricing(helper.UsageTokenCostInput{
 			InputTokens:         row.Input,
 			OutputTokens:        row.Output,
-			CachedTokens:        row.Cached,
 			CacheReadTokens:     row.CacheRead,
 			CacheCreationTokens: row.CacheWrite,
 		})
 		cost := 0.0
 		switch {
 		case hasPricing:
-			cost = helper.CalculateUsageTokenCost(helper.UsageTokenCostInput{
+			cost = helper.CalculateUsageTokenCostBreakdown(helper.UsageTokenCostInput{
 				InputTokens:         row.Input,
 				OutputTokens:        row.Output,
-				CachedTokens:        row.Cached,
 				CacheReadTokens:     row.CacheRead,
 				CacheCreationTokens: row.CacheWrite,
-			}, pricing)
+			}, pricing).TotalCostUSD
 			costAvailable = true
 		case !requiresPricing:
 			costAvailable = true

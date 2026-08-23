@@ -89,7 +89,7 @@ export function UsersPage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             <Button variant="ghost" onClick={() => { window.location.href = appPath('/'); }}>
               {t('users.back_to_dashboard')}
             </Button>
-            <Button variant="ghost" onClick={() => { window.location.href = appPath('/contentfilter'); }}>
+            <Button variant="ghost" onClick={() => { window.location.href = appPath('/content-filter'); }}>
               {t('content_filter.title')}
             </Button>
             <Button onClick={() => setShowCreate(true)}>

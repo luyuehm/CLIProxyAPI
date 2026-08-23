@@ -1,4 +1,6 @@
-import { type AnalysisResponse, type AuthFilesManagementResponse, type AuthSessionResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type KeyOverviewTimeRange, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingSyncPreviewResponse, type StatusResponse, type UpdateCheckResponse, type UsageEventModelFilterOptionsResponse, type UsageEventSourceFilterOptionsResponse, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type RouteConfig, type RouteConfigInput, type RouteConfigResponse, type User, type UserCreateRequest, type UserUpdateRequest, type ContentFilterRule, type ContentFilterRuleListResponse, type ContentFilterRuleCreateRequest, type ContentFilterRuleUpdateRequest, type ContentFilterLog, type ContentFilterLogListResponse, type FilterTextRequest, type FilterTextResult, type AlertChannel, type AlertChannelCreateRequest, type AlertChannelUpdateRequest, type AlertRule, type AlertRuleCreateRequest, type AlertRuleUpdateRequest, type AlertEvent, type BudgetConfig, type BudgetUsage, type BudgetReport, type BudgetUpdateRequest, type CostAllocationRule, type CostAllocationRuleCreateRequest, type CostAllocationRuleUpdateRequest, type DepartmentsResponse, type CostAllocationReport } from './types'
+import { type AlertChannel, type AlertChannelCreateRequest, type AlertChannelUpdateRequest, type AlertEvent, type AlertEventRetryResponse, type AlertRule, type AlertRuleCreateRequest, type AlertRuleUpdateRequest, type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse, type BudgetConfig, type BudgetUsage, type BudgetReport, type BudgetUpdateRequest, type User, type UserCreateRequest, type UserUpdateRequest, type CostAllocationRule, type CostAllocationRuleCreateRequest, type CostAllocationRuleUpdateRequest, type CostAllocationReport, type DepartmentsResponse, type ContentFilterRule, type ContentFilterRuleListResponse, type ContentFilterRuleCreateRequest, type ContentFilterRuleUpdateRequest, type ContentFilterLogsQuery, type ContentFilterLogsResponse, type ContentFilterTestRequest, type FilterTextResult } from './types'
+import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
+import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
 export class ApiError extends Error {
   status: number
@@ -10,7 +12,13 @@ export class ApiError extends Error {
   }
 }
 
+export const isUsageRangeBoundsConflict = (error: unknown): error is ApiError => (
+  error instanceof ApiError && error.status === 409
+)
+
 const APP_BASE_PATH_PLACEHOLDER = '__APP_BASE_PATH__'
+const EMBED_SESSION_STORAGE_KEY = 'cpa_usage_keeper_embed_session'
+const EMBED_SESSION_HEADER = 'X-CPA-Usage-Keeper-Embed-Session'
 
 declare global {
   interface Window {
@@ -31,6 +39,10 @@ function realtimeBucketSecondsForWindow(window: OverviewRealtimeWindow): number 
   return 30
 }
 
+function realtimeResponseParticleTotal(particles: OverviewRealtimeBlock['response_distribution']['ttft']['particles']): number {
+  return particles.reduce((total, particle) => total + Math.max(1, Number(particle.count) || 0), 0)
+}
+
 function normalizeOverviewRealtimeBlock(
   block: Partial<OverviewRealtimeBlock> & {
     current_usage?: Partial<OverviewRealtimeBlock['current_usage']>;
@@ -40,21 +52,31 @@ function normalizeOverviewRealtimeBlock(
 ): OverviewRealtimeBlock {
   const currentUsage: Partial<OverviewRealtimeBlock['current_usage']> = block.current_usage ?? {}
   const responseDistribution: Partial<OverviewRealtimeBlock['response_distribution']> = block.response_distribution ?? {}
+  const ttftParticles = responseDistribution.ttft?.particles ?? []
+  const latencyParticles = responseDistribution.latency?.particles ?? []
   const resolvedWindow = block.window ?? fallbackWindow ?? '15m'
   return {
     window: resolvedWindow,
     timezone: block.timezone,
     bucket_seconds: block.bucket_seconds ?? realtimeBucketSecondsForWindow(resolvedWindow),
+    window_start: block.window_start,
+    window_end: block.window_end,
     token_velocity: block.token_velocity ?? [],
     response_level: block.response_level ?? [],
     response_distribution: {
       ttft: {
         average_line: responseDistribution.ttft?.average_line ?? [],
-        particles: responseDistribution.ttft?.particles ?? [],
+        particles: ttftParticles,
+        total_particles: responseDistribution.ttft?.total_particles ?? realtimeResponseParticleTotal(ttftParticles),
+        sampled: responseDistribution.ttft?.sampled ?? false,
+        max_particles: responseDistribution.ttft?.max_particles ?? 1000,
       },
       latency: {
         average_line: responseDistribution.latency?.average_line ?? [],
-        particles: responseDistribution.latency?.particles ?? [],
+        particles: latencyParticles,
+        total_particles: responseDistribution.latency?.total_particles ?? realtimeResponseParticleTotal(latencyParticles),
+        sampled: responseDistribution.latency?.sampled ?? false,
+        max_particles: responseDistribution.latency?.max_particles ?? 1000,
       },
     },
     current_usage: {
@@ -75,6 +97,10 @@ export interface FetchKeyOverviewRealtimeOptions {
 
 export interface FetchUsageOverviewRealtimeOptions extends FetchKeyOverviewRealtimeOptions {
   apiKeyId?: string
+}
+
+interface EmbedLoginResponse {
+  session_token?: string
 }
 
 export function appPath(path: string): string {
@@ -100,11 +126,86 @@ async function parseApiError(response: Response, fallback: string): Promise<neve
   throw new ApiError(message, response.status)
 }
 
+function isMutatingMethod(method: string | undefined): boolean {
+  const normalized = (method ?? 'GET').toUpperCase()
+  return normalized !== 'GET' && normalized !== 'HEAD'
+}
+
+function embedSessionStorage(): Storage | null {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.sessionStorage ?? null
+  } catch {
+    return null
+  }
+}
+
+function readEmbedSessionToken(): string {
+  if (!isCPAMCEmbed()) return ''
+  const storage = embedSessionStorage()
+  if (!storage) return ''
+  try {
+    return storage.getItem(EMBED_SESSION_STORAGE_KEY)?.trim() ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function storeEmbedSessionToken(token: string): void {
+  const trimmed = token.trim()
+  if (!trimmed) return
+  const storage = embedSessionStorage()
+  if (!storage) return
+  try {
+    storage.setItem(EMBED_SESSION_STORAGE_KEY, trimmed)
+  } catch {
+    // 浏览器可能在隐私/嵌入场景禁用 sessionStorage；此时保持 cookie-first 行为即可。
+  }
+}
+
+export function clearEmbedSessionToken(): void {
+  const storage = embedSessionStorage()
+  if (!storage) return
+  try {
+    storage.removeItem(EMBED_SESSION_STORAGE_KEY)
+  } catch {
+    // 清理 fallback token 是 best-effort，不能阻断登录/登出流程。
+  }
+}
+
 async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  return fetch(input, {
-    credentials: 'include',
+  const headers = new Headers(init?.headers)
+  if (isMutatingMethod(init?.method)) {
+    headers.set('X-CPA-Usage-Keeper-Request', 'fetch')
+  }
+  if (isCPAMCEmbed()) {
+    headers.set('X-CPA-Usage-Keeper-Embed', 'cpamc')
+    const embedSessionToken = readEmbedSessionToken()
+    if (embedSessionToken) {
+      headers.set(EMBED_SESSION_HEADER, embedSessionToken)
+    }
+  }
+  // Attach user JWT if available
+  const jwtRaw = localStorage.getItem('cpa_keeper_jwt')
+  if (jwtRaw) {
+    try {
+      const parsed = JSON.parse(jwtRaw)
+      if (parsed.token) {
+        headers.set('Authorization', `Bearer ${parsed.token}`)
+      }
+    } catch {
+      // ignore invalid stored JWT
+    }
+  }
+  const response = await fetch(input, {
     ...init,
+    credentials: 'include',
+    headers,
   })
+  if (response.status === 401) {
+    clearEmbedSessionToken()
+  }
+  return response
 }
 
 export async function getSession(signal?: AbortSignal): Promise<AuthSessionResponse> {
@@ -112,10 +213,35 @@ export async function getSession(signal?: AbortSignal): Promise<AuthSessionRespo
   if (!response.ok) {
     await parseApiError(response, `Failed to load auth session: ${response.status}`)
   }
-  return response.json()
+  const session = await response.json()
+  if (isCPAMCEmbed() && !session.authenticated) {
+    clearEmbedSessionToken()
+  }
+  return session
+}
+
+async function readEmbedLoginResponse(response: Response): Promise<EmbedLoginResponse> {
+  if (!isCPAMCEmbed()) return {}
+  try {
+    return await response.json() as EmbedLoginResponse
+  } catch {
+    return {}
+  }
+}
+
+async function activateEmbedSessionFallback(response: Response): Promise<void> {
+  const payload = await readEmbedLoginResponse(response)
+  if (!payload.session_token) return
+  const session = await getSession()
+  if (!session.authenticated) {
+    storeEmbedSessionToken(payload.session_token)
+  }
 }
 
 export async function login(password: string): Promise<void> {
+  if (isCPAMCEmbed()) {
+    clearEmbedSessionToken()
+  }
   const response = await apiFetch(apiPath('/auth/login'), {
     method: 'POST',
     headers: {
@@ -126,9 +252,13 @@ export async function login(password: string): Promise<void> {
   if (!response.ok) {
     await parseApiError(response, `Failed to login: ${response.status}`)
   }
+  await activateEmbedSessionFallback(response)
 }
 
 export async function loginWithCPAAPIKey(apiKey: string): Promise<void> {
+  if (isCPAMCEmbed()) {
+    clearEmbedSessionToken()
+  }
   const response = await apiFetch(apiPath('/auth/api-key-login'), {
     method: 'POST',
     headers: {
@@ -139,23 +269,84 @@ export async function loginWithCPAAPIKey(apiKey: string): Promise<void> {
   if (!response.ok) {
     await parseApiError(response, `Failed to login with CPA API key: ${response.status}`)
   }
+  await activateEmbedSessionFallback(response)
 }
 
 export async function logout(): Promise<void> {
-  const response = await apiFetch(apiPath('/auth/logout'), {
-    method: 'POST',
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to logout: ${response.status}`)
+  try {
+    const response = await apiFetch(apiPath('/auth/logout'), {
+      method: 'POST',
+    })
+    if (!response.ok) {
+      await parseApiError(response, `Failed to logout: ${response.status}`)
+    }
+  } finally {
+    clearEmbedSessionToken()
   }
 }
 
-export async function fetchKeyOverview(range: KeyOverviewTimeRange, signal?: AbortSignal): Promise<UsageOverviewResponse> {
+export async function fetchAuthSessions(signal?: AbortSignal): Promise<AuthManagedSessionsResponse> {
+  const response = await apiFetch(apiPath('/auth/sessions'), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load auth sessions: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function revokeAuthSession(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/auth/sessions/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to revoke auth session: ${response.status}`)
+  }
+}
+
+const buildUsageRangeParams = (request: UsageRangeRequest): URLSearchParams => {
   const params = new URLSearchParams()
-  params.set('range', range)
+  params.set('range', resolveUsageRequestRange(request.range))
+  if (request.unit) {
+    params.set('unit', request.unit)
+  }
+  if (request.start) {
+    params.set('start', request.start)
+  }
+  if (request.end) {
+    params.set('end', request.end)
+  }
+  return params
+}
+
+export async function fetchKeyOverview(request: UsageRangeRequest, signal?: AbortSignal): Promise<UsageOverviewResponse> {
+  const params = buildUsageRangeParams(request)
   const response = await apiFetch(`${apiPath('/key-overview')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load key overview: ${response.status}`)
+  }
+  return response.json()
+}
+
+export interface FetchUsageActivityOptions {
+  request: UsageActivityRequest
+  apiKeyId?: string
+  signal?: AbortSignal
+}
+
+const buildUsageActivityParams = (request: UsageActivityRequest): URLSearchParams => {
+  // 显式 Activity window 使用 window 参数；其余选择复用 Overview 的 range 参数。
+  if ('window' in request) {
+    const params = new URLSearchParams()
+    params.set('window', request.window)
+    return params
+  }
+  return buildUsageRangeParams(request)
+}
+
+export async function fetchKeyActivity({ request, signal }: FetchUsageActivityOptions): Promise<UsageActivityResponse> {
+  const params = buildUsageActivityParams(request)
+  const response = await apiFetch(`${apiPath('/key-activity')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load key activity: ${response.status}`)
   }
   return response.json()
 }
@@ -177,15 +368,8 @@ export async function fetchKeyOverviewRealtime(options: FetchKeyOverviewRealtime
   return normalizeOverviewRealtimeBlock(payload, window)
 }
 
-export async function fetchUsageOverview(range: string, start?: string, end?: string, signal?: AbortSignal, apiKeyId?: string): Promise<UsageOverviewResponse> {
-  const params = new URLSearchParams()
-  params.set('range', range)
-  if (start) {
-    params.set('start', start)
-  }
-  if (end) {
-    params.set('end', end)
-  }
+export async function fetchUsageOverview(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string): Promise<UsageOverviewResponse> {
+  const params = buildUsageRangeParams(request)
   const selectedAPIKeyId = apiKeyId?.trim()
   if (selectedAPIKeyId) {
     params.set('api_key_id', selectedAPIKeyId)
@@ -194,6 +378,19 @@ export async function fetchUsageOverview(range: string, start?: string, end?: st
   const response = await apiFetch(`${apiPath('/usage/overview')}${query ? `?${query}` : ''}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load usage overview: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchUsageActivity({ request, apiKeyId, signal }: FetchUsageActivityOptions): Promise<UsageActivityResponse> {
+  const params = buildUsageActivityParams(request)
+  const selectedAPIKeyId = apiKeyId?.trim()
+  if (selectedAPIKeyId) {
+    params.set('api_key_id', selectedAPIKeyId)
+  }
+  const response = await apiFetch(`${apiPath('/usage/activity')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load usage activity: ${response.status}`)
   }
   return response.json()
 }
@@ -222,13 +419,68 @@ export async function fetchUsageOverviewRealtime(options: FetchUsageOverviewReal
 export interface FetchUsageEventsOptions {
   page?: number
   pageSize?: number
+  cursorMode?: boolean
+  cursor?: string
   model?: string
-  provider?: string
   // Request Events 页面沿用 Source 命名；这里传的是 usage identity，后端会转换为 auth_index 查询。
   source?: string
+  authType?: UsageIdentityAuthType
   result?: string
-  statusCode?: number
   apiKeyId?: string
+}
+
+export type UsageEventsExportFormat = 'csv' | 'json'
+
+export interface UsageEventsExportFile {
+  blob: Blob
+  filename: string
+}
+
+interface UsageEventRequestLogDownloadURLResponse {
+  download_url?: string
+}
+
+function buildUsageEventsParams(request: UsageRangeRequest | undefined, options?: FetchUsageEventsOptions, includePagination = true): URLSearchParams {
+  const params = request ? buildUsageRangeParams(request) : new URLSearchParams()
+  if (includePagination && typeof options?.page === 'number' && Number.isFinite(options.page) && options.page > 0) {
+    params.set('page', String(Math.floor(options.page)))
+  }
+  if (includePagination && typeof options?.pageSize === 'number' && Number.isFinite(options.pageSize) && options.pageSize > 0) {
+    params.set('page_size', String(Math.floor(options.pageSize)))
+  }
+  if (includePagination && options?.cursorMode) {
+    params.set('cursor_mode', 'true')
+  }
+  const cursor = options?.cursor?.trim()
+  if (includePagination && cursor) {
+    params.set('cursor', cursor)
+  }
+  const model = options?.model?.trim()
+  if (model) {
+    params.set('model', model)
+  }
+  const source = options?.source?.trim()
+  if (source) {
+    // Source 下拉的 value 不是 usage_events.source 原始字段，而是后端用于 auth_index 查询的 identity。
+    params.set('source', source)
+  }
+  if (options?.authType === 1 || options?.authType === 2) {
+    params.set('auth_type', String(options.authType))
+  }
+  const result = options?.result?.trim()
+  if (result) {
+    params.set('result', result)
+  }
+  const selectedAPIKeyId = options?.apiKeyId?.trim()
+  if (selectedAPIKeyId) {
+    params.set('api_key_id', selectedAPIKeyId)
+  }
+  return params
+}
+
+function parseAttachmentFilename(contentDisposition: string | null, fallback: string): string {
+  const match = contentDisposition?.match(/filename="([^"]+)"/i)
+  return match?.[1]?.trim() || fallback
 }
 
 export async function fetchUsageEventModelFilterOptions(signal?: AbortSignal): Promise<UsageEventModelFilterOptionsResponse> {
@@ -247,45 +499,8 @@ export async function fetchUsageEventSourceFilterOptions(signal?: AbortSignal): 
   return response.json()
 }
 
-export async function fetchUsageEvents(range: string, start?: string, end?: string, signal?: AbortSignal, options?: FetchUsageEventsOptions): Promise<UsageEventsResponse> {
-  const params = new URLSearchParams()
-  params.set('range', range)
-  if (start) {
-    params.set('start', start)
-  }
-  if (end) {
-    params.set('end', end)
-  }
-  if (typeof options?.page === 'number' && Number.isFinite(options.page) && options.page > 0) {
-    params.set('page', String(Math.floor(options.page)))
-  }
-  if (typeof options?.pageSize === 'number' && Number.isFinite(options.pageSize) && options.pageSize > 0) {
-    params.set('page_size', String(Math.floor(options.pageSize)))
-  }
-  const model = options?.model?.trim()
-  if (model) {
-    params.set('model', model)
-  }
-  const provider = options?.provider?.trim()
-  if (provider) {
-    params.set('provider', provider)
-  }
-  const source = options?.source?.trim()
-  if (source) {
-    // Source 下拉的 value 不是 usage_events.source 原始字段，而是后端用于 auth_index 查询的 identity。
-    params.set('source', source)
-  }
-  const result = options?.result?.trim()
-  if (result) {
-    params.set('result', result)
-  }
-  if (typeof options?.statusCode === 'number' && Number.isFinite(options.statusCode)) {
-    params.set('status_code', String(Math.floor(options.statusCode)))
-  }
-  const selectedAPIKeyId = options?.apiKeyId?.trim()
-  if (selectedAPIKeyId) {
-    params.set('api_key_id', selectedAPIKeyId)
-  }
+export async function fetchUsageEvents(request: UsageRangeRequest | undefined, signal?: AbortSignal, options?: FetchUsageEventsOptions): Promise<UsageEventsResponse> {
+  const params = buildUsageEventsParams(request, options)
   const query = params.toString()
   const response = await apiFetch(`${apiPath('/usage/events')}${query ? `?${query}` : ''}`, { signal })
   if (!response.ok) {
@@ -294,65 +509,39 @@ export async function fetchUsageEvents(range: string, start?: string, end?: stri
   return response.json()
 }
 
-export interface FetchAuditLogsOptions extends FetchUsageEventsOptions {
-  exportFormat?: 'csv' | 'json'
-  statusGroup?: string
-}
-
-export async function fetchAuditLogs(range: string, start?: string, end?: string, signal?: AbortSignal, options?: FetchAuditLogsOptions): Promise<UsageEventsResponse> {
-  const params = new URLSearchParams()
-  params.set('range', range)
-  if (start) {
-    params.set('start', start)
-  }
-  if (end) {
-    params.set('end', end)
-  }
-  if (typeof options?.page === 'number' && Number.isFinite(options.page) && options.page > 0) {
-    params.set('page', String(Math.floor(options.page)))
-  }
-  if (typeof options?.pageSize === 'number' && Number.isFinite(options.pageSize) && options.pageSize > 0) {
-    params.set('page_size', String(Math.floor(options.pageSize)))
-  }
-  const model = options?.model?.trim()
-  if (model) {
-    params.set('model', model)
-  }
-  const provider = options?.provider?.trim()
-  if (provider) {
-    params.set('provider', provider)
-  }
-  const source = options?.source?.trim()
-  if (source) {
-    params.set('source', source)
-  }
-  const result = options?.result?.trim()
-  if (result) {
-    params.set('result', result)
-  }
-  if (options?.statusGroup) {
-    params.set('status_group', options.statusGroup)
-  }
-  if (typeof options?.statusCode === 'number' && Number.isFinite(options.statusCode)) {
-    params.set('status_code', String(Math.floor(options.statusCode)))
-  }
-  if (options?.exportFormat) {
-    params.set('export', options.exportFormat)
-  }
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/audit/logs')}${query ? `?${query}` : ''}`, { signal })
+export async function fetchUsageEventRequestLog(eventId: string, signal?: AbortSignal): Promise<UsageEventRequestLogResponse> {
+  const response = await apiFetch(apiPath(`/usage/events/${encodeURIComponent(eventId)}/request-log`), { signal, cache: 'no-store' })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load audit logs: ${response.status}`)
+    await parseApiError(response, `Failed to load usage event request log: ${response.status}`)
   }
   return response.json()
 }
 
-export async function fetchAuditLogRequestLog(requestID: string, signal?: AbortSignal): Promise<string> {
-  const response = await apiFetch(apiPath(`/audit/logs/${encodeURIComponent(requestID)}/request-log`), { signal })
+export async function createUsageEventRequestLogDownloadURL(eventId: string): Promise<string> {
+  const response = await apiFetch(apiPath(`/usage/events/${encodeURIComponent(eventId)}/request-log/download-token`), { method: 'POST', cache: 'no-store' })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load request log: ${response.status}`)
+    await parseApiError(response, `Failed to create usage event request log download URL: ${response.status}`)
   }
-  return response.text()
+  const payload = await response.json() as UsageEventRequestLogDownloadURLResponse
+  const downloadURL = payload.download_url?.trim()
+  if (!downloadURL) {
+    throw new ApiError('request log download URL is missing', response.status)
+  }
+  return downloadURL
+}
+
+export async function exportUsageEvents(request: UsageRangeRequest, format: UsageEventsExportFormat, options?: FetchUsageEventsOptions): Promise<UsageEventsExportFile> {
+  const params = buildUsageEventsParams(request, options, false)
+  params.set('format', format)
+  const query = params.toString()
+  const response = await apiFetch(`${apiPath('/usage/events/export')}${query ? `?${query}` : ''}`)
+  if (!response.ok) {
+    await parseApiError(response, `Failed to export usage events: ${response.status}`)
+  }
+  return {
+    blob: await response.blob(),
+    filename: parseAttachmentFilename(response.headers.get('Content-Disposition'), `usage-events.${format}`),
+  }
 }
 
 export type UsageIdentityPageSort = 'priority' | 'total_requests' | 'total_tokens' | 'last_used_at'
@@ -401,6 +590,20 @@ export async function fetchUsageIdentitiesPage(signal?: AbortSignal, options?: F
   const response = await apiFetch(`${apiPath('/usage/identities/page')}${query ? `?${query}` : ''}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load usage identities page: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateUsageIdentityAlias(id: string, alias: string | null): Promise<UsageIdentity> {
+  const response = await apiFetch(apiPath(`/usage/identities/${encodeURIComponent(id)}`), {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ alias }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update usage identity alias: ${response.status}`)
   }
   return response.json()
 }
@@ -456,6 +659,30 @@ export async function startUsageQuotaInspection(signal?: AbortSignal): Promise<U
   return response.json()
 }
 
+
+export async function resetUsageQuota(authIndex: string, signal?: AbortSignal): Promise<UsageQuotaResetResponse> {
+  const response = await apiFetch(apiPath('/quota/reset'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ auth_index: authIndex }),
+    signal,
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to reset usage quota: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchUsageQuotaResetCredits(authIndex: string, signal?: AbortSignal): Promise<UsageQuotaResetCreditsResponse> {
+  const response = await apiFetch(apiPath(`/quota/reset-credits/${encodeURIComponent(authIndex)}`), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load quota reset credits: ${response.status}`)
+  }
+  return response.json()
+}
+
 export async function fetchUsageQuotaRefreshTask(authIndex: string, signal?: AbortSignal): Promise<UsageQuotaRefreshTaskResponse> {
   const response = await apiFetch(apiPath(`/quota/refresh/${encodeURIComponent(authIndex)}`), { signal })
   if (!response.ok) {
@@ -492,15 +719,63 @@ export async function deleteAuthFiles(names: string[]): Promise<AuthFilesManagem
   return response.json()
 }
 
-export async function fetchAnalysis(range: string, start?: string, end?: string, signal?: AbortSignal, apiKeyId?: string): Promise<AnalysisResponse> {
-  const params = new URLSearchParams()
-  params.set('range', range)
-  if (start) {
-    params.set('start', start)
+export async function userLogin(username: string, password: string): Promise<{ user: User; token: string }> {
+  const response = await apiFetch(apiPath('/users/auth/login'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to login: ${response.status}`)
   }
-  if (end) {
-    params.set('end', end)
+  return response.json()
+}
+
+export async function fetchUsers(signal?: AbortSignal): Promise<User[]> {
+  const response = await apiFetch(apiPath('/users'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load users: ${response.status}`)
   }
+  return response.json()
+}
+
+export async function createUser(req: UserCreateRequest): Promise<User> {
+  const response = await apiFetch(apiPath('/users'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create user: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateUser(id: string, req: UserUpdateRequest): Promise<User> {
+  const response = await apiFetch(apiPath(`/users/${id}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update user: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteUser(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/users/${id}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete user: ${response.status}`)
+  }
+}
+
+export async function fetchAnalysis(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string): Promise<AnalysisResponse> {
+  const params = buildUsageRangeParams(request)
   const selectedAPIKeyId = apiKeyId?.trim()
   if (selectedAPIKeyId) {
     params.set('api_key_id', selectedAPIKeyId)
@@ -513,6 +788,19 @@ export async function fetchAnalysis(range: string, start?: string, end?: string,
   return response.json()
 }
 
+export async function fetchAnalysisLatency(request: UsageRangeRequest, signal?: AbortSignal, apiKeyId?: string): Promise<AnalysisLatencyDiagnostics> {
+  const params = buildUsageRangeParams(request)
+  const selectedAPIKeyId = apiKeyId?.trim()
+  if (selectedAPIKeyId) {
+    params.set('api_key_id', selectedAPIKeyId)
+  }
+  const query = params.toString()
+  const response = await apiFetch(`${apiPath('/usage/analysis/latency')}${query ? `?${query}` : ''}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load analysis latency: ${response.status}`)
+  }
+  return response.json()
+}
 
 export async function fetchCpaApiKeyOptions(signal?: AbortSignal): Promise<CpaApiKeyOptionsResponse> {
   const response = await apiFetch(apiPath('/usage/api-keys/options'), { signal, cache: 'no-store' })
@@ -568,11 +856,34 @@ export async function fetchStatus(signal?: AbortSignal): Promise<StatusResponse>
   return response.json()
 }
 
-export async function markStatusActive(signal?: AbortSignal): Promise<void> {
-  const response = await apiFetch(apiPath('/status/active'), { signal })
+export async function fetchVersion(signal?: AbortSignal): Promise<VersionResponse> {
+  const response = await apiFetch(apiPath('/version'), { signal, cache: 'no-store' })
   if (!response.ok) {
-    await parseApiError(response, `Failed to mark backend page activity: ${response.status}`)
+    await parseApiError(response, `Failed to load version: ${response.status}`)
   }
+  return response.json()
+}
+
+export async function fetchQuotaAutoRefreshSettings(signal?: AbortSignal): Promise<QuotaAutoRefreshSettings> {
+  const response = await apiFetch(apiPath('/quota/auto-refresh/settings'), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load quota auto refresh settings: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateQuotaAutoRefreshSettings(settings: QuotaAutoRefreshSettings): Promise<QuotaAutoRefreshSettings> {
+  const response = await apiFetch(apiPath('/quota/auto-refresh/settings'), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(settings),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update quota auto refresh settings: ${response.status}`)
+  }
+  return response.json()
 }
 
 export async function fetchUpdateCheck(signal?: AbortSignal): Promise<UpdateCheckResponse> {
@@ -587,6 +898,36 @@ export async function fetchPricing(signal?: AbortSignal): Promise<PricingRespons
   const response = await apiFetch(apiPath('/pricing'), { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load pricing: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchPricingRules(model: string, signal?: AbortSignal): Promise<PricingRulesResponse> {
+  const params = new URLSearchParams({ model })
+  const response = await apiFetch(`${apiPath('/pricing/rules')}?${params.toString()}`, {
+    signal,
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load pricing rules: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function replacePricingRules(
+  request: ReplacePricingRulesRequest,
+  signal?: AbortSignal,
+): Promise<PricingRulesResponse> {
+  const response = await apiFetch(apiPath('/pricing/rules'), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+    signal,
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update pricing rules: ${response.status}`)
   }
   return response.json()
 }
@@ -613,6 +954,20 @@ export async function updatePricing(model: string, pricing: Omit<PricingEntry, '
   return response.json()
 }
 
+export async function updatePricingBatch(pricing: PricingEntry[]): Promise<PricingResponse> {
+  const response = await apiFetch(apiPath('/pricing/batch'), {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ pricing }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update pricing: ${response.status}`)
+  }
+  return response.json()
+}
+
 export async function deletePricing(model: string): Promise<void> {
   const params = new URLSearchParams({ model })
   const response = await apiFetch(`${apiPath('/pricing')}?${params.toString()}`, {
@@ -622,200 +977,22 @@ export async function deletePricing(model: string): Promise<void> {
     await parseApiError(response, `Failed to delete pricing: ${response.status}`)
   }
 }
-export async function fetchRouteConfigs(signal?: AbortSignal): Promise<RouteConfigResponse> {
-  const response = await apiFetch(apiPath('/routes'), { signal, cache: 'no-store' })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to load route configs: ${response.status}`)
-  }
-  return response.json()
-}
 
-export async function upsertRouteConfig(input: RouteConfigInput, pathModel?: string): Promise<RouteConfig> {
-  const url = pathModel ? `${apiPath('/routes')}/${encodeURIComponent(pathModel)}` : apiPath('/routes')
-  const response = await apiFetch(url, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to save route config: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function deleteRouteConfig(model: string): Promise<void> {
-  const params = new URLSearchParams({ model })
-  const response = await apiFetch(`${apiPath('/routes')}?${params.toString()}`, {
-    method: 'DELETE',
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to delete route config: ${response.status}`)
-  }
-}
-
-export async function userLogin(username: string, password: string): Promise<{ user: User }> {
-  const response = await apiFetch(apiPath('/users/auth/login'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ username, password }),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to login: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function fetchUsers(signal?: AbortSignal): Promise<User[]> {
-  const response = await apiFetch(apiPath('/users'), { signal, cache: 'no-store' })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to load users: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function createUser(input: UserCreateRequest): Promise<User> {
-  const response = await apiFetch(apiPath('/users'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to create user: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function updateUser(id: string, input: UserUpdateRequest): Promise<User> {
-  const response = await apiFetch(apiPath(`/users/${encodeURIComponent(id)}`), {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to update user: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function deleteUser(id: string): Promise<void> {
-  const response = await apiFetch(apiPath(`/users/${encodeURIComponent(id)}`), {
-    method: 'DELETE',
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to delete user: ${response.status}`)
-  }
-}
-
-export async function fetchContentFilterRules(signal?: AbortSignal): Promise<ContentFilterRule[]> {
-  const response = await apiFetch(apiPath('/contentfilter/rules'), { signal, cache: 'no-store' })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to load content filter rules: ${response.status}`)
-  }
-  const data: ContentFilterRuleListResponse = await response.json()
-  return data.rules || []
-}
-
-export async function fetchContentFilterRule(id: number, signal?: AbortSignal): Promise<ContentFilterRule> {
-  const response = await apiFetch(apiPath(`/contentfilter/rules/${encodeURIComponent(id)}`), { signal, cache: 'no-store' })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to load content filter rule: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function createContentFilterRule(input: ContentFilterRuleCreateRequest): Promise<ContentFilterRule> {
-  const response = await apiFetch(apiPath('/contentfilter/rules'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to create content filter rule: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function updateContentFilterRule(id: number, input: ContentFilterRuleUpdateRequest): Promise<ContentFilterRule> {
-  const response = await apiFetch(apiPath(`/contentfilter/rules/${encodeURIComponent(id)}`), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to update content filter rule: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function deleteContentFilterRule(id: number): Promise<void> {
-  const response = await apiFetch(apiPath(`/contentfilter/rules/${encodeURIComponent(id)}`), {
-    method: 'DELETE',
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to delete content filter rule: ${response.status}`)
-  }
-}
-
-export async function fetchContentFilterLogs(params?: {
-  rule_id?: number
-  filter_type?: string
-  action?: string
-  model?: string
-  limit?: number
-  offset?: number
-  signal?: AbortSignal
-}): Promise<ContentFilterLogListResponse> {
-  const query = new URLSearchParams()
-  if (params?.rule_id) query.set('rule_id', String(params.rule_id))
-  if (params?.filter_type) query.set('filter_type', params.filter_type)
-  if (params?.action) query.set('action', params.action)
-  if (params?.model) query.set('model', params.model)
-  if (params?.limit) query.set('limit', String(params.limit))
-  if (params?.offset) query.set('offset', String(params.offset))
-
-  const qs = query.toString()
-  const path = qs ? `/contentfilter/logs?${qs}` : '/contentfilter/logs'
-  const response = await apiFetch(apiPath(path), { signal: params?.signal, cache: 'no-store' })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to load content filter logs: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function testContentFilter(input: FilterTextRequest): Promise<FilterTextResult> {
-  const response = await apiFetch(apiPath('/contentfilter/test'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to test content filter: ${response.status}`)
-  }
-  return response.json()
-}
-
+// ── Alert API ──
 
 export async function fetchAlertChannels(signal?: AbortSignal): Promise<AlertChannel[]> {
-  const response = await apiFetch(apiPath('/alerts/channels'), { signal, cache: 'no-store' })
+  const response = await apiFetch(apiPath('/alerts/channels'), { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load alert channels: ${response.status}`)
   }
   return response.json()
 }
 
-export async function createAlertChannel(input: AlertChannelCreateRequest): Promise<AlertChannel> {
+export async function createAlertChannel(req: AlertChannelCreateRequest): Promise<AlertChannel> {
   const response = await apiFetch(apiPath('/alerts/channels'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to create alert channel: ${response.status}`)
@@ -823,11 +1000,11 @@ export async function createAlertChannel(input: AlertChannelCreateRequest): Prom
   return response.json()
 }
 
-export async function updateAlertChannel(id: number, input: AlertChannelUpdateRequest): Promise<AlertChannel> {
+export async function updateAlertChannel(id: number, req: AlertChannelUpdateRequest): Promise<AlertChannel> {
   const response = await apiFetch(apiPath(`/alerts/channels/${id}`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to update alert channel: ${response.status}`)
@@ -845,18 +1022,18 @@ export async function deleteAlertChannel(id: number): Promise<void> {
 }
 
 export async function fetchAlertRules(signal?: AbortSignal): Promise<AlertRule[]> {
-  const response = await apiFetch(apiPath('/alerts/rules'), { signal, cache: 'no-store' })
+  const response = await apiFetch(apiPath('/alerts/rules'), { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load alert rules: ${response.status}`)
   }
   return response.json()
 }
 
-export async function createAlertRule(input: AlertRuleCreateRequest): Promise<AlertRule> {
+export async function createAlertRule(req: AlertRuleCreateRequest): Promise<AlertRule> {
   const response = await apiFetch(apiPath('/alerts/rules'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to create alert rule: ${response.status}`)
@@ -864,11 +1041,11 @@ export async function createAlertRule(input: AlertRuleCreateRequest): Promise<Al
   return response.json()
 }
 
-export async function updateAlertRule(id: number, input: AlertRuleUpdateRequest): Promise<AlertRule> {
+export async function updateAlertRule(id: number, req: AlertRuleUpdateRequest): Promise<AlertRule> {
   const response = await apiFetch(apiPath(`/alerts/rules/${id}`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to update alert rule: ${response.status}`)
@@ -885,16 +1062,16 @@ export async function deleteAlertRule(id: number): Promise<void> {
   }
 }
 
-export async function fetchAlertEvents(limit = 20, signal?: AbortSignal): Promise<AlertEvent[]> {
-  const path = `/alerts/events?limit=${limit}`
-  const response = await apiFetch(apiPath(path), { signal, cache: 'no-store' })
+export async function fetchAlertEvents(limit: number, signal?: AbortSignal): Promise<AlertEvent[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  const response = await apiFetch(`${apiPath('/alerts/events')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load alert events: ${response.status}`)
   }
   return response.json()
 }
 
-export async function retryAlertEvent(id: number): Promise<{ event: AlertEvent; retry_error?: string }> {
+export async function retryAlertEvent(id: number): Promise<AlertEventRetryResponse> {
   const response = await apiFetch(apiPath(`/alerts/events/${id}/retry`), {
     method: 'POST',
   })
@@ -904,34 +1081,40 @@ export async function retryAlertEvent(id: number): Promise<{ event: AlertEvent; 
   return response.json()
 }
 
-export async function fetchBudgetConfig(period?: string, signal?: AbortSignal): Promise<BudgetConfig> {
-  const params = new URLSearchParams()
-  if (period) params.set('period', period)
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/budget/config')}${query ? `?${query}` : ''}`, { signal, cache: 'no-store' })
+// ── Budget API ──
+
+export async function fetchBudget(period: string, signal?: AbortSignal): Promise<BudgetConfig> {
+  const params = new URLSearchParams({ period })
+  const response = await apiFetch(`${apiPath('/budget/config')}?${params.toString()}`, { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load budget config: ${response.status}`)
   }
   return response.json()
 }
 
-export async function fetchBudget(period?: string, signal?: AbortSignal): Promise<BudgetConfig> {
-  const params = new URLSearchParams()
-  if (period) params.set('period', period)
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/budget')}${query ? `?${query}` : ''}`, { signal, cache: 'no-store' })
+export async function fetchBudgetUsage(period: string, signal?: AbortSignal): Promise<BudgetUsage> {
+  const params = new URLSearchParams({ period })
+  const response = await apiFetch(`${apiPath('/budget/usage')}?${params.toString()}`, { signal })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load budget: ${response.status}`)
+    await parseApiError(response, `Failed to load budget usage: ${response.status}`)
   }
   return response.json()
 }
 
-export async function updateBudget(input: BudgetUpdateRequest, signal?: AbortSignal): Promise<BudgetConfig> {
+export async function fetchBudgetReport(period: string, signal?: AbortSignal): Promise<BudgetReport> {
+  const params = new URLSearchParams({ period })
+  const response = await apiFetch(`${apiPath('/budget/report')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load budget report: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateBudget(req: BudgetUpdateRequest): Promise<BudgetConfig> {
   const response = await apiFetch(apiPath('/budget'), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-    signal,
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to update budget: ${response.status}`)
@@ -939,60 +1122,44 @@ export async function updateBudget(input: BudgetUpdateRequest, signal?: AbortSig
   return response.json()
 }
 
-export async function fetchBudgetUsage(period?: string, signal?: AbortSignal): Promise<BudgetUsage> {
-  const params = new URLSearchParams()
-  if (period) params.set('period', period)
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/budget/usage')}${query ? `?${query}` : ''}`, { signal, cache: 'no-store' })
+// ── Cost Allocation API ──
+
+export function costAllocationExportURL(dimension: string): string {
+  const params = new URLSearchParams({ dimension })
+  return `${apiPath('/costallocation/export.csv')}?${params.toString()}`
+}
+
+export async function fetchCostAllocationDepartments(dimension: string, signal?: AbortSignal): Promise<DepartmentsResponse> {
+  const params = new URLSearchParams({ dimension })
+  const response = await apiFetch(`${apiPath('/costallocation/departments')}?${params.toString()}`, { signal })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load budget usage: ${response.status}`)
+    await parseApiError(response, `Failed to load cost allocation departments: ${response.status}`)
   }
   return response.json()
 }
 
-export async function fetchBudgetReport(period?: string, signal?: AbortSignal): Promise<BudgetReport> {
-  const params = new URLSearchParams()
-  if (period) params.set('period', period)
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/budget/report')}${query ? `?${query}` : ''}`, { signal, cache: 'no-store' })
+export async function fetchCostAllocationReport(dimension: string, signal?: AbortSignal): Promise<CostAllocationReport> {
+  const params = new URLSearchParams({ dimension })
+  const response = await apiFetch(`${apiPath('/costallocation/report')}?${params.toString()}`, { signal })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load budget report: ${response.status}`)
-  }
-  return response.json()
-}
-
-export async function fetchCostAllocationDepartments(
-  dimension: string,
-  from?: string,
-  to?: string,
-  signal?: AbortSignal,
-): Promise<DepartmentsResponse> {
-  const params = new URLSearchParams()
-  if (from) params.set('from', from)
-  if (to) params.set('to', to)
-  params.set('dimension', dimension)
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/costallocation/departments')}?${query}`, { signal, cache: 'no-store' })
-  if (!response.ok) {
-    await parseApiError(response, `Failed to load department costs: ${response.status}`)
+    await parseApiError(response, `Failed to load cost allocation report: ${response.status}`)
   }
   return response.json()
 }
 
 export async function fetchCostAllocationRules(signal?: AbortSignal): Promise<CostAllocationRule[]> {
-  const response = await apiFetch(apiPath('/costallocation/rules'), { signal, cache: 'no-store' })
+  const response = await apiFetch(apiPath('/costallocation/rules'), { signal })
   if (!response.ok) {
     await parseApiError(response, `Failed to load cost allocation rules: ${response.status}`)
   }
-  const payload = await response.json() as { rules: CostAllocationRule[] }
-  return payload.rules
+  return response.json()
 }
 
-export async function createCostAllocationRule(input: CostAllocationRuleCreateRequest): Promise<CostAllocationRule> {
+export async function createCostAllocationRule(req: CostAllocationRuleCreateRequest): Promise<CostAllocationRule> {
   const response = await apiFetch(apiPath('/costallocation/rules'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to create cost allocation rule: ${response.status}`)
@@ -1000,11 +1167,11 @@ export async function createCostAllocationRule(input: CostAllocationRuleCreateRe
   return response.json()
 }
 
-export async function updateCostAllocationRule(id: number, input: CostAllocationRuleUpdateRequest): Promise<CostAllocationRule> {
-  const response = await apiFetch(apiPath(`/costallocation/rules/${id}`), {
+export async function updateCostAllocationRule(id: string, req: CostAllocationRuleUpdateRequest): Promise<CostAllocationRule> {
+  const response = await apiFetch(apiPath(`/costallocation/rules/${encodeURIComponent(id)}`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify(req),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to update cost allocation rule: ${response.status}`)
@@ -1012,8 +1179,8 @@ export async function updateCostAllocationRule(id: number, input: CostAllocation
   return response.json()
 }
 
-export async function deleteCostAllocationRule(id: number): Promise<void> {
-  const response = await apiFetch(apiPath(`/costallocation/rules/${id}`), {
+export async function deleteCostAllocationRule(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/costallocation/rules/${encodeURIComponent(id)}`), {
     method: 'DELETE',
   })
   if (!response.ok) {
@@ -1021,29 +1188,71 @@ export async function deleteCostAllocationRule(id: number): Promise<void> {
   }
 }
 
-export async function fetchCostAllocationReport(
-  dimension: string,
-  from?: string,
-  to?: string,
-  signal?: AbortSignal,
-): Promise<CostAllocationReport> {
-  const params = new URLSearchParams()
-  if (from) params.set('from', from)
-  if (to) params.set('to', to)
-  params.set('dimension', dimension)
-  const query = params.toString()
-  const response = await apiFetch(`${apiPath('/costallocation/report')}?${query}`, { signal, cache: 'no-store' })
+// ── Content Filter API ──
+
+export async function fetchContentFilterRules(signal?: AbortSignal): Promise<ContentFilterRule[]> {
+  const response = await apiFetch(apiPath('/contentfilter/rules'), { signal })
   if (!response.ok) {
-    await parseApiError(response, `Failed to load cost allocation report: ${response.status}`)
+    await parseApiError(response, `Failed to load content filter rules: ${response.status}`)
+  }
+  const data = await response.json() as ContentFilterRuleListResponse
+  return data.rules
+}
+
+export async function createContentFilterRule(req: ContentFilterRuleCreateRequest): Promise<ContentFilterRule> {
+  const response = await apiFetch(apiPath('/contentfilter/rules'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create content filter rule: ${response.status}`)
   }
   return response.json()
 }
 
-export function costAllocationExportURL(dimension: string, from?: string, to?: string): string {
-  const params = new URLSearchParams()
-  if (from) params.set('from', from)
-  if (to) params.set('to', to)
-  params.set('dimension', dimension)
-  return `${apiPath('/costallocation/export.csv')}?${params.toString()}`
+export async function updateContentFilterRule(id: number, req: ContentFilterRuleUpdateRequest): Promise<ContentFilterRule> {
+  const response = await apiFetch(apiPath(`/contentfilter/rules/${id}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update content filter rule: ${response.status}`)
+  }
+  return response.json()
 }
 
+export async function deleteContentFilterRule(id: number): Promise<void> {
+  const response = await apiFetch(apiPath(`/contentfilter/rules/${id}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete content filter rule: ${response.status}`)
+  }
+}
+
+export async function fetchContentFilterLogs(query: ContentFilterLogsQuery, signal?: AbortSignal): Promise<ContentFilterLogsResponse> {
+  const params = new URLSearchParams()
+  if (query.filter_type) params.set('filter_type', query.filter_type)
+  if (query.action) params.set('action', query.action)
+  if (typeof query.limit === 'number') params.set('limit', String(query.limit))
+  const response = await apiFetch(`${apiPath('/contentfilter/logs')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load content filter logs: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function testContentFilter(req: ContentFilterTestRequest, signal?: AbortSignal): Promise<FilterTextResult> {
+  const response = await apiFetch(apiPath('/contentfilter/test'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+    signal,
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to test content filter: ${response.status}`)
+  }
+  return response.json()
+}

@@ -1,13 +1,25 @@
+@use '../styles/variables' as *;
+@use '../styles/mixins' as *;
+
 .pageShell {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 24px 16px;
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 520px at 12% -8%, rgba($primary-color, 0.12), transparent 58%),
+    radial-gradient(880px 480px at 100% 0%, rgba(0, 0, 0, 0.06), transparent 52%),
+    var(--bg-secondary);
+  padding: 28px 20px 48px;
+
+  @include mobile {
+    padding: 18px 12px 32px;
+  }
 }
 
 .pageFrame {
+  width: min(1245px, 100%);
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
 }
 
 .header {

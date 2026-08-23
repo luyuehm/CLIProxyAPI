@@ -134,6 +134,19 @@ export function IconSettings({ size = 20, ...props }: IconProps) {
   );
 }
 
+export function IconGripVertical({ size = 20, ...props }: IconProps) {
+  return (
+    <svg {...baseSvgProps} width={size} height={size} {...props}>
+      <circle cx="9" cy="5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="12" r="1" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="19" r="1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="19" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function IconScrollText({ size = 20, ...props }: IconProps) {
   return (
     <svg {...baseSvgProps} width={size} height={size} {...props}>
@@ -155,12 +168,38 @@ export function IconInfo({ size = 20, ...props }: IconProps) {
   );
 }
 
+export function IconCircleHelp({ size = 20, ...props }: IconProps) {
+  return (
+    <svg {...baseSvgProps} width={size} height={size} {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.09 9a3 3 0 1 1 5.83 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
 export function IconCircleAlert({ size = 20, ...props }: IconProps) {
   return (
     <svg {...baseSvgProps} width={size} height={size} {...props}>
       <circle cx="12" cy="12" r="10" />
       <line x1="12" x2="12" y1="8" y2="12" />
       <line x1="12" x2="12.01" y1="16" y2="16" />
+    </svg>
+  );
+}
+
+
+export function IconGaugeReset({ size = 20, ...props }: IconProps) {
+  return (
+    <svg {...baseSvgProps} width={size} height={size} {...props}>
+      <path d="M4.5 14.5a7.5 7.5 0 0 1 12.7-5.3" />
+      <path d="M17.2 9.2 15 7" />
+      <path d="M15 7h2.5V4.5" />
+      <path d="M12 14.5v-4.5" />
+      <path d="M12 14.5 8.5 11" />
+      <path d="M8.5 18.5h7" />
+      <path d="M10 18.5v-1.5" />
+      <path d="M14 18.5v-1.5" />
     </svg>
   );
 }
@@ -180,6 +219,15 @@ export function IconDownload({ size = 20, ...props }: IconProps) {
       <path d="M12 15V3" />
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <path d="m7 10 5 5 5-5" />
+    </svg>
+  );
+}
+
+export function IconCopy({ size = 20, ...props }: IconProps) {
+  return (
+    <svg {...baseSvgProps} width={size} height={size} {...props}>
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
     </svg>
   );
 }
@@ -246,11 +294,11 @@ export function IconCheck({ size = 20, ...props }: IconProps) {
   );
 }
 
-export function IconPlus({ size = 20, ...props }: IconProps) {
+export function IconPencil({ size = 20, ...props }: IconProps) {
   return (
     <svg {...baseSvgProps} width={size} height={size} {...props}>
-      <path d="M5 12h14" />
-      <path d="M12 5v14" />
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
     </svg>
   );
 }

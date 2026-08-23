@@ -48,11 +48,45 @@ const (
 	migrationRemoveUsageEventWriteHeavyIndexes      = "20260610_remove_usage_event_write_heavy_indexes"
 	migrationRemoveUsageEventLowValueIndexes        = "20260611_remove_usage_event_low_value_indexes"
 	migrationReplaceRedisInboxQueueKeyWithSource    = "20260612_replace_redis_inbox_queue_key_with_source"
+	migrationCreateAuthSessions                     = "20260620_create_auth_sessions"
+	migrationAddUsageIdentityAlias                  = "20260629_add_usage_identity_alias"
+	migrationAddAuthSessionSource                   = "20260701_add_auth_session_source"
+	migrationModelPriceMultiplier                   = "20260702_model_price_multiplier"
+	migrationCreateAppSettings                      = "20260702_create_app_settings"
+	migrationBackfillCacheReadTokens                = "20260710_backfill_cache_read_tokens"
+	migrationAddUsageIdentityXAIUserID              = "20260711_add_usage_identity_xai_user_id"
+	migrationAddUsageEventResponseServiceTier       = "20260715_add_usage_event_response_service_tier"
+	migrationAddUsageEventGenerate                  = "20260715_add_usage_event_generate"
+	// migrationUsageActivityStats 创建统一 Activity 并在回填完成后删除旧 Health 表。
+	migrationUsageActivityStats = "20260719_usage_activity_stats"
+	// migrationAlignUsageActivityShort 把已部署 short 行切换到本地自然日边界。
+	migrationAlignUsageActivityShort = "20260722_align_usage_activity_short"
+	// migrationUsageOverviewFiveDimensions 从现存 raw events 重建五维 hourly/daily rollup。
+	migrationUsageOverviewFiveDimensions = "20260723_usage_overview_five_dimensions"
+	// migrationModelPriceRules 创建每模型精确字段倍率规则表。
+	migrationModelPriceRules = "20260723_model_price_rules"
+	// migrationUsageAggregationCheckpoints 原子合并 Overview/Activity 两张旧水位表。
+	migrationUsageAggregationCheckpoints = "20260726_usage_aggregation_checkpoints"
+	// migrationUsageLatencyStats 用可恢复短事务回填 Latency hour/day 单表。
+	migrationUsageLatencyStats = "20260726_usage_latency_stats"
+	// migrationAddUsageEventClientMetadata 保存 CPA 新增的客户端请求元数据，历史行保持 NULL。
+	migrationAddUsageEventClientMetadata = "20260729_add_usage_event_client_metadata"
+	// migrationCreateUsageEventArchive 创建永久冷表；运行期归档在 schema 完成后才会启动。
+	migrationCreateUsageEventArchive = "20260730_create_usage_event_archive"
+	// migrationLocalRankingStats 创建固定四周期的本地排行累计。
+	migrationLocalRankingStats = "20260731_local_ranking_stats"
+	// migrationAddCPAAPIKeyLocalRankingAvatar 保存可空的本地排行头像覆盖值。
+	migrationAddCPAAPIKeyLocalRankingAvatar = "20260803_add_cpa_api_key_local_ranking_avatar"
+	// migrationAddAuthSessionClientMetadata 保存会话客户端与最近活动信息，旧会话只回填活动时间。
+	migrationAddAuthSessionClientMetadata = "20260813_add_auth_session_client_metadata"
 	migrationAddUsageEventStatusCode                 = "20260819_add_usage_event_status_code"
-	migrationCreateUsersTable                       = "20260819_create_users"
-	migrationCreateAlertTables                      = "20260820_create_alert_tables"
-	migrationCreateBudgetConfigTable            = "20260820_create_budget_config"
-	migrationCreateCostAllocationTable          = "20260820_create_cost_allocation"
+	migrationCreateUsersTable               = "20260819_create_users"
+	migrationCreateRouteConfigs             = "20260819_route_configs"
+	migrationCreateAlertTables              = "20260820_create_alert_tables"
+	migrationCreateBudgetConfigTable        = "20260820_create_budget_config"
+	migrationCreateContentFilterTables      = "20260820_create_content_filter_tables"
+	migrationCreateCostAllocationTable      = "20260820_create_cost_allocation"
+	migrationSeedModelPrices = "20260821_seed_model_prices"
 )
 
 type schemaMigration struct {
@@ -145,11 +179,39 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationRemoveUsageEventWriteHeavyIndexes, run: removeUsageEventWriteHeavyIndexesMigration},
 		{version: migrationRemoveUsageEventLowValueIndexes, run: removeUsageEventLowValueIndexesMigration},
 		{version: migrationReplaceRedisInboxQueueKeyWithSource, run: replaceRedisInboxQueueKeyWithSourceMigration},
-		{version: migrationAddUsageEventStatusCode, run: addUsageEventStatusCodeMigration},
+		{version: migrationCreateAuthSessions, run: createAuthSessionsMigration},
+		{version: migrationAddUsageIdentityAlias, run: addUsageIdentityAliasMigration},
+		{version: migrationAddAuthSessionSource, run: addAuthSessionSourceMigration},
+		{version: migrationModelPriceMultiplier, run: addModelPriceMultiplierMigration},
+		{version: migrationCreateAppSettings, run: createAppSettingsMigration},
+		{version: migrationBackfillCacheReadTokens, run: backfillCacheReadTokensMigration},
+		{version: migrationAddUsageIdentityXAIUserID, run: addUsageIdentityXAIUserIDMigration},
+		{version: migrationAddUsageEventResponseServiceTier, run: addUsageEventResponseServiceTierMigration},
+		{version: migrationAddUsageEventGenerate, run: addUsageEventGenerateMigration},
+		// Activity migration 自己管理 1000-event 小事务，外层不能再包一个长事务。
+		{version: migrationUsageActivityStats, run: usageActivityStatsMigration, disableTransaction: true},
+		// short 重建在默认事务内原子完成，失败时旧行和版本标记一起回滚。
+		{version: migrationAlignUsageActivityShort, run: alignUsageActivityShortMigration},
+		// 五维重建自己管理 schema/setup 与 1000-event 小事务，外层不能再包长事务。
+		{version: migrationUsageOverviewFiveDimensions, run: usageOverviewFiveDimensionsMigration, disableTransaction: true},
+		{version: migrationModelPriceRules, run: createModelPriceRulesMigration},
+		// 通用水位建表、复制、验证和旧表删除必须由默认外层事务共同保护。
+		{version: migrationUsageAggregationCheckpoints, run: usageAggregationCheckpointsMigration},
+		// Latency 回填逐页提交，外层长事务会破坏断点续跑语义。
+		{version: migrationUsageLatencyStats, run: usageLatencyStatsMigration, disableTransaction: true},
+		{version: migrationAddUsageEventClientMetadata, run: addUsageEventClientMetadataMigration},
+		{version: migrationCreateUsageEventArchive, run: createUsageEventArchiveMigration},
+		{version: migrationLocalRankingStats, run: localRankingStatsMigration},
+		{version: migrationAddCPAAPIKeyLocalRankingAvatar, run: addCPAAPIKeyLocalRankingAvatarMigration},
+		{version: migrationAddAuthSessionClientMetadata, run: addAuthSessionClientMetadataMigration},
 		{version: migrationCreateUsersTable, run: createUsersTableMigration},
+		{version: migrationAddUsageEventStatusCode, run: addUsageEventStatusCodeMigration},
+		{version: migrationCreateRouteConfigs, run: addRouteConfigsMigration},
 		{version: migrationCreateAlertTables, run: createAlertTablesMigration},
 		{version: migrationCreateBudgetConfigTable, run: createBudgetConfigMigration},
+		{version: migrationCreateContentFilterTables, run: createContentFilterTablesMigration},
 		{version: migrationCreateCostAllocationTable, run: createCostAllocationMigration},
+		{version: migrationSeedModelPrices, run: seedModelPricesMigration},
 	}
 }
 
@@ -174,7 +236,7 @@ func runSchemaMigrationBody(db *gorm.DB, migration databaseMigration) error {
 		return fmt.Errorf("check schema migration %s: %w", migration.version, err)
 	}
 	if count > 0 {
-		logger.Info("schema migration skipped")
+		logger.Debug("schema migration skipped")
 		return nil
 	}
 	logger.Info("schema migration started")

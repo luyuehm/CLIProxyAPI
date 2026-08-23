@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { getRoleHomePath, shouldNormalizeRolePath } from './App';
+import { getRoleHomePath, isCostAllocationPath, shouldNormalizeRolePath } from './App';
 
 const appSource = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const appStylesSource = readFileSync(new URL('./App.css', import.meta.url), 'utf8');
@@ -18,6 +18,12 @@ describe('App role route normalization', () => {
     expect(shouldNormalizeRolePath('api_key_viewer', '/key-overview')).toBe(false);
   });
 
+  it('recognizes the cost allocation route alias', () => {
+    expect(isCostAllocationPath('/cost-allocation')).toBe(true);
+    expect(isCostAllocationPath('/cost-share')).toBe(true);
+    expect(isCostAllocationPath('/budget')).toBe(false);
+  });
+
   it('clears stale overview auth errors when the session is cleared', () => {
     expect(appSource).toContain("import { useUsageStatsStore } from './stores/useUsageStatsStore';");
     expect(appSource).toMatch(/const clearUsageStats = useUsageStatsStore\(\(state\) => state\.clearUsageStats\);/);
@@ -27,7 +33,7 @@ describe('App role route normalization', () => {
   it('mounts the shared footer from the app shell', () => {
     expect(appSource).toContain("import './App.css';");
     expect(appSource).toContain("import { AppFooter } from './components/AppFooter';");
-    expect(appSource).toMatch(/<div className="app-frame">[\s\S]*<main className="app-main">\{page\}<\/main>[\s\S]*<AppFooter \/>[\s\S]*<\/div>/);
+    expect(appSource).toMatch(/<div className="app-frame"[^>]*>[\s\S]*<main className="app-main">\{page\}<\/main>[\s\S]*<AppFooter loadVersion=\{authState === 'authenticated'\} \/>[\s\S]*<\/div>/);
   });
 
   it('lets app pages fill the space above the shared footer', () => {

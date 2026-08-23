@@ -2,12 +2,14 @@
 @use '../styles/mixins' as *;
 
 .pageShell {
-  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
   background:
     radial-gradient(1200px 520px at 12% -8%, rgba($primary-color, 0.12), transparent 58%),
     radial-gradient(880px 480px at 100% 0%, rgba(0, 0, 0, 0.06), transparent 52%),
     var(--bg-secondary);
-  padding: 28px 20px 48px;
+  padding: var(--keeper-page-padding-top, 28px) var(--keeper-page-padding-x, 20px) var(--keeper-page-padding-bottom, 48px);
 
   @include mobile {
     padding: 18px 12px 32px;
@@ -15,11 +17,12 @@
 }
 
 .pageFrame {
-  width: min(1245px, 100%);
+  width: min(var(--keeper-page-max-width, 1245px), 100%);
   margin: 0 auto;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: var(--keeper-page-frame-gap, 18px);
 }
 
 .topBar {
@@ -29,8 +32,8 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 18px;
-  padding: 18px 20px;
+  gap: var(--keeper-top-bar-gap, 18px);
+  padding: var(--keeper-top-bar-padding-y, 18px) var(--keeper-top-bar-padding-x, 20px);
   border: 1px solid var(--border-color);
   border-radius: 24px;
   background: color-mix(in srgb, var(--bg-primary) 84%, transparent);
@@ -57,20 +60,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 42px;
-  padding: 0 20px;
-  border-radius: 999px;
-  border: 1px solid rgba($primary-color, 0.24);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-primary) 94%, rgba($primary-color, 0.06)), color-mix(in srgb, var(--bg-secondary) 82%, transparent)),
-    var(--bg-secondary);
-  box-shadow:
-    0 8px 20px rgba(0, 0, 0, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.05) inset;
-  color: color-mix(in srgb, var(--text-primary) 88%, var(--primary-color));
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  min-height: var(--keeper-toolbar-control-height, 42px);
+  padding: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -88,12 +86,10 @@
 }
 
 .identityChip,
-.themeSwitcher,
-.logoutSwitcher,
-.refreshSwitcher {
+.themeSwitcher {
   display: inline-flex;
   align-items: stretch;
-  min-height: 42px;
+  min-height: var(--keeper-toolbar-control-height, 42px);
   padding: 4px;
   border-radius: 999px;
   border: 1px solid var(--border-color);
@@ -125,9 +121,7 @@
   white-space: nowrap;
 }
 
-.themePill,
-.logoutPill,
-.refreshPill {
+.themePill {
   border: 0;
   background: transparent;
   color: var(--text-secondary);
@@ -154,27 +148,12 @@
   }
 }
 
-.themePillActive,
-.logoutPillActive,
-.refreshPillActive,
-.refreshPillLoading {
+.themePillActive {
   background: var(--bg-primary);
   color: var(--text-primary);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
 }
 
-.logoutPill {
-  font-weight: 700;
-}
-
-.logoutPillInner,
-.refreshPillInner {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.refreshSpinner,
 .loadingOverlaySpinner {
   width: 12px;
   height: 12px;
@@ -185,11 +164,16 @@
 
 .contentColumn {
   width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .container {
   width: 100%;
   min-height: 100%;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -197,21 +181,8 @@
   padding: 8px 0 0;
 }
 
-.toolbarMetaRow {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  padding: 0 2px;
-
-  @include mobile {
-    justify-content: flex-start;
-  }
-}
-
-.lastRefreshed {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  white-space: nowrap;
+.container > :last-child {
+  flex: 1 0 auto;
 }
 
 .toolbarRow {
@@ -301,64 +272,6 @@
   transform: translateY(0);
 }
 
-.usageFilterField {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-}
-
-.rangeFilterField {
-  flex: 0 0 auto;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-
-.usageFilterLabel {
-  padding-left: 0;
-  font-size: 10px;
-  line-height: 1;
-  color: var(--text-secondary);
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.timeRangeGroup {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  width: fit-content;
-  min-width: 0;
-  max-width: 640px;
-  min-height: 46px;
-  padding: 5px 6px 5px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 9999px;
-  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  opacity: 1;
-  overflow: hidden;
-  transform: translateX(0);
-}
-
-.rangeSelectControl {
-  width: 164px;
-  flex: 0 0 164px;
-  min-width: 0;
-
-  :global(button) {
-    height: 34px;
-    border-radius: 9999px;
-    border-color: var(--border-color);
-    background: var(--bg-primary);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
-    font-size: 12px;
-    font-weight: 700;
-  }
-}
-
 .usageRefreshSlot {
   display: flex;
   justify-content: flex-end;
@@ -417,22 +330,13 @@
     white-space: nowrap;
   }
 
-  .timeRangeGroup {
-    width: 100%;
-  }
-
-  .rangeSelectControl {
-    width: 150px;
-    flex-basis: 150px;
-  }
-
   .usageRefreshSlot,
   .usageFilterActions,
-  .refreshSwitcher {
+  .refreshMainActionShell {
     width: 100%;
   }
 
-  .refreshPill {
+  .refreshMainActionButton {
     width: 100%;
   }
 }

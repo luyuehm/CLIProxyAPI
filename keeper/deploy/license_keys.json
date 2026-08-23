@@ -1,0 +1,12 @@
+{
+  "keys": {
+    "demo-enterprise-2026": {
+      "max_activations": 3,
+      "expires_at": "2027-12-31T23:59:59Z",
+      "metadata": {
+        "customer": "Demo Enterprise",
+        "tier": "enterprise"
+      }
+    }
+  }
+}

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-
+	"cpa-usage-keeper/internal/cpa"
 	"cpa-usage-keeper/internal/service"
 	servicedto "cpa-usage-keeper/internal/service/dto"
 	"cpa-usage-keeper/internal/timeutil"
@@ -18,7 +18,7 @@ import (
 
 // requestLogDetailProvider fetches a single CPA request log by request ID.
 type requestLogDetailProvider interface {
-	FetchRequestLogByID(ctx context.Context, requestID string) ([]byte, int, error)
+	FetchRequestLogByID(ctx context.Context, requestID string) (*cpa.RequestLogResult, error)
 }
 
 type auditLogTokenPayload struct {
@@ -53,9 +53,10 @@ func buildAuditLogPayload(row servicedto.UsageEventRecord) auditLogPayload {
 	if row.ID != 0 {
 		id = strconv.FormatInt(row.ID, 10)
 	}
-	statusCode := row.StatusCode
-	if statusCode <= 0 {
-		statusCode = 200
+	// DTO 没有 StatusCode 字段，从 Failed 推断
+	statusCode := 200
+	if row.Failed {
+		statusCode = 500
 	}
 	return auditLogPayload{
 		ID:         id,
@@ -73,7 +74,8 @@ func buildAuditLogPayload(row servicedto.UsageEventRecord) auditLogPayload {
 			InputTokens:         row.InputTokens,
 			OutputTokens:        row.OutputTokens,
 			ReasoningTokens:     row.ReasoningTokens,
-			CachedTokens:        row.CachedTokens,
+			// DTO 没有 CachedTokens 字段，用 CacheReadTokens + CacheCreationTokens
+			CachedTokens:        row.CacheReadTokens + row.CacheCreationTokens,
 			CacheReadTokens:     row.CacheReadTokens,
 			CacheCreationTokens: row.CacheCreationTokens,
 			TotalTokens:         row.TotalTokens,
@@ -143,16 +145,20 @@ func registerAuditLogsRoute(
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing request id"})
 			return
 		}
-		body, statusCode, err := cpaClient.FetchRequestLogByID(c.Request.Context(), requestID)
+		result, err := cpaClient.FetchRequestLogByID(c.Request.Context(), requestID)
 		if err != nil {
-			if statusCode == http.StatusNotFound {
+			if result != nil && result.StatusCode == http.StatusNotFound {
 				c.JSON(http.StatusNotFound, gin.H{"error": "request log not found"})
 				return
 			}
 			writeInternalError(c, "fetch request log failed", err)
 			return
 		}
-		c.Data(http.StatusOK, "text/plain; charset=utf-8", body)
+		contentType := "text/plain; charset=utf-8"
+		if result.ContentType != "" {
+			contentType = result.ContentType
+		}
+		c.Data(http.StatusOK, contentType, result.Body)
 	})
 }
 
@@ -172,9 +178,10 @@ func parseAuditLogFilterQuery(req *http.Request) (servicedto.UsageFilter, error)
 	if statusGroup != "" {
 		switch statusGroup {
 		case "2xx", "3xx", "4xx", "5xx":
-			filter.StatusGroup = statusGroup
+			// DTO 没有 StatusGroup 字段，通过 Result 传递分组
+			filter.Result = statusGroup
 		case "1xx":
-			filter.StatusGroup = "1xx"
+			filter.Result = "1xx"
 		default:
 			return filter, fmt.Errorf("invalid status_group %q", statusGroup)
 		}

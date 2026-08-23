@@ -2,17 +2,20 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import './index.css';
 import './App.css';
-import { ApiError, appPath, getSession, login, loginWithCPAAPIKey } from './lib/api';
+import './embed/cpamcEmbed.css';
+import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey } from './lib/api';
 import type { AuthRole, AuthSessionAPIKeySummary } from './lib/types';
 import { AppFooter } from './components/AppFooter';
 import { KeyOverviewPage } from './pages/KeyOverviewPage';
 import { LoginPage } from './pages/LoginPage';
 import { UsagePage } from './pages/UsagePage';
-import { UsersPage } from './pages/UsersPage';
-import { ContentFilterPage } from './pages/ContentFilterPage';
 import { AlertPage } from './pages/AlertPage';
 import { BudgetPage } from './pages/BudgetPage';
+import { ContentFilterPage } from './pages/ContentFilterPage';
 import { CostAllocationPage } from './pages/CostAllocationPage';
+import { UsersPage } from './pages/UsersPage';
+import { NavigationPage } from './pages/NavigationPage';
+import { cpamcEmbedSearch, isCPAMCEmbed, notifyCPAMCEmbedReady } from './embed/cpamcEmbed';
 import { useUsageStatsStore } from './stores/useUsageStatsStore';
 
 type AuthState = 'checking' | 'authenticated' | 'unauthenticated';
@@ -31,6 +34,10 @@ const stripBasePath = (pathname: string, basePath: string | undefined): string =
 
 export const shouldNormalizeRolePath = (role: AuthRole, currentPath: string): boolean => currentPath !== getRoleHomePath(role);
 
+export const isCostAllocationPath = (currentPath: string): boolean => (
+  currentPath === '/cost-allocation' || currentPath === '/cost-share'
+);
+
 function App() {
   const { t } = useTranslation();
   const [authState, setAuthState] = useState<AuthState>('checking');
@@ -40,8 +47,10 @@ function App() {
   const [apiKeyLoginError, setAPIKeyLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const clearUsageStats = useUsageStatsStore((state) => state.clearUsageStats);
+  const isEmbeddedInCPAMC = isCPAMCEmbed();
 
   const clearSession = useCallback(() => {
+    clearEmbedSessionToken();
     clearUsageStats();
     setAuthState('unauthenticated');
     setAuthRole(null);
@@ -71,10 +80,18 @@ function App() {
   }, [clearSession, loadSession]);
 
   useEffect(() => {
+    notifyCPAMCEmbedReady();
+  }, []);
+
+  useEffect(() => {
     if (authState !== 'authenticated' || !authRole) return;
     const currentPath = stripBasePath(window.location.pathname, window.__APP_BASE_PATH__);
+    if (currentPath === '/cost-share') {
+      window.history.replaceState(null, '', appPath('/cost-allocation') + cpamcEmbedSearch());
+      return;
+    }
     if (!shouldNormalizeRolePath(authRole, currentPath)) return;
-    window.history.replaceState(null, '', appPath(getRoleHomePath(authRole)));
+    window.history.replaceState(null, '', appPath(getRoleHomePath(authRole)) + cpamcEmbedSearch());
   }, [authRole, authState]);
 
   const handlePasswordLogin = useCallback(async (password: string) => {
@@ -88,7 +105,7 @@ function App() {
         clearSession();
         return;
       }
-      window.history.replaceState(null, '', appPath('/'));
+      window.history.replaceState(null, '', appPath('/') + cpamcEmbedSearch());
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setAdminLoginError(t('auth.invalid_password'));
@@ -112,7 +129,7 @@ function App() {
         clearSession();
         return;
       }
-      window.history.replaceState(null, '', appPath('/key-overview'));
+      window.history.replaceState(null, '', appPath('/key-overview') + cpamcEmbedSearch());
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setAPIKeyLoginError(t('auth.invalid_api_key'));
@@ -136,30 +153,27 @@ function App() {
     page = <KeyOverviewPage apiKey={sessionAPIKey} onAuthRequired={clearSession} />;
   } else {
     const currentPath = stripBasePath(window.location.pathname, window.__APP_BASE_PATH__);
-    const isUsersRoute = currentPath.startsWith('/users');
-    const isContentFilterRoute = currentPath.startsWith('/contentfilter');
-    const isBudgetRoute = currentPath.startsWith('/budget');
-    const isCostAllocationRoute = currentPath.startsWith('/costallocation');
-    const isAlertRoute = currentPath.startsWith('/alerts');
-    if (isUsersRoute) {
-      page = <UsersPage onAuthRequired={clearSession} />;
-    } else if (isContentFilterRoute) {
-      page = <ContentFilterPage onAuthRequired={clearSession} />;
-    } else if (isBudgetRoute) {
-      page = <BudgetPage onAuthRequired={clearSession} />;
-    } else if (isCostAllocationRoute) {
-      page = <CostAllocationPage onAuthRequired={clearSession} />;
-    } else if (isAlertRoute) {
+    if (currentPath === '/alerts') {
       page = <AlertPage onAuthRequired={clearSession} />;
+    } else if (currentPath === '/content-filter') {
+      page = <ContentFilterPage onAuthRequired={clearSession} />;
+    } else if (currentPath === '/budget') {
+      page = <BudgetPage onAuthRequired={clearSession} />;
+    } else if (currentPath === '/users') {
+      page = <UsersPage onAuthRequired={clearSession} />;
+    } else if (isCostAllocationPath(currentPath)) {
+      page = <CostAllocationPage onAuthRequired={clearSession} />;
+    } else if (currentPath === '/navigation') {
+      page = <NavigationPage />;
     } else {
       page = <UsagePage onAuthRequired={clearSession} />;
     }
   }
 
   return (
-    <div className="app-frame">
+    <div className="app-frame" data-embed={isEmbeddedInCPAMC ? 'cpamc' : undefined}>
       <main className="app-main">{page}</main>
-      <AppFooter />
+      <AppFooter loadVersion={authState === 'authenticated'} />
     </div>
   );
 }

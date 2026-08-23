@@ -2,7 +2,10 @@ import { useTranslation } from 'react-i18next'
 import styles from './CredentialSections.module.scss'
 import type { AiProviderCredentialRow } from './credentialViewModels'
 import type { UsageIdentityPageSort } from '@/lib/api'
-import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
+import { CredentialHealthPanel } from './CredentialHealthPanel'
+import { CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { ProviderBrandIcon } from '@/components/ProviderBrandIcon'
 
 interface AiProviderCredentialsSectionProps {
   rows: AiProviderCredentialRow[]
@@ -12,12 +15,15 @@ interface AiProviderCredentialsSectionProps {
   pageSize: number
   sort: UsageIdentityPageSort
   loading: boolean
+  aliasSavingId?: string
+  onSaveAlias?: (id: string, alias: string) => Promise<void>
+  onOpenDetails?: (row: AiProviderCredentialRow) => void
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   onSortChange: (sort: UsageIdentityPageSort) => void
 }
 
-export function AiProviderCredentialsSection({ rows, total, page, totalPages, pageSize, sort, loading, onPageChange, onPageSizeChange, onSortChange }: AiProviderCredentialsSectionProps) {
+export function AiProviderCredentialsSection({ rows, total, page, totalPages, pageSize, sort, loading, aliasSavingId, onSaveAlias, onOpenDetails, onPageChange, onPageSizeChange, onSortChange }: AiProviderCredentialsSectionProps) {
   const { t } = useTranslation()
 
   return (
@@ -28,26 +34,57 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
     >
       {loading && rows.length === 0 && <div className={styles.credentialEmptyState}>{t('common.loading')}</div>}
       {!loading && rows.length === 0 && <div className={styles.credentialEmptyState}>{t('usage_stats.credentials_ai_providers_empty')}</div>}
+      {rows.length > 0 && (
+        <CredentialTableHeader
+          rowClassName={styles.aiProviderCredentialRow}
+          nameLabel={t('usage_stats.credentials_column_name')}
+          totalRequestsLabel={t('usage_stats.total_requests')}
+          successRateLabel={t('usage_stats.success_rate')}
+          totalTokensLabel={t('usage_stats.total_tokens')}
+          cacheReadRateLabel={t('usage_stats.cache_rate')}
+          sideLabel={t('usage_stats.credentials_column_health')}
+        />
+      )}
       {rows.map((row) => (
         <CredentialRowShell
           key={row.identity.id || row.identity.identity}
-          title={row.displayName}
-          subtitle={(
+          icon={<ProviderBrandIcon providerType={row.identity.type} size={30} ariaLabel={row.typeLabel} />}
+          title={onSaveAlias ? (
+            <CredentialAliasEditor
+              identityId={row.identity.id}
+              displayName={row.displayName}
+              alias={row.identity.alias}
+              saving={aliasSavingId === row.identity.id}
+              disabled={isCredentialAliasEditorDisabled(row.identity.id, row.identity.is_deleted, aliasSavingId)}
+              onOpenDetails={onOpenDetails ? () => onOpenDetails(row) : undefined}
+              onSaveAlias={onSaveAlias}
+            />
+          ) : onOpenDetails ? (
+            <button
+              type="button"
+              className={styles.credentialDetailNameButton}
+            data-credential-detail-trigger="true"
+            onClick={() => onOpenDetails(row)}
+          >
+              <span className={styles.credentialDetailNameText}>{row.displayName}</span>
+              <span className={styles.credentialDetailNameArrow} aria-hidden="true">›</span>
+            </button>
+          ) : row.displayName}
+          subtitle={row.priorityLabel ? (
             <span className={styles.credentialIdentityBadges}>
-              <CredentialBadge>{row.typeLabel}</CredentialBadge>
-              {row.priorityLabel && <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>}
+              <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>
             </span>
-          )}
+          ) : undefined}
           badges={null}
           metrics={(
             <>
-              <MetricPill label={t('usage_stats.total_requests')} value={<RequestMetric total={row.totalRequests} success={row.successCount} failure={row.failureCount} />} />
-              <MetricPill label={t('usage_stats.success_rate')} value={<TonePercent value={row.successRate} tone={successRateTone(row.successRate)} />} />
-              <MetricPill label={t('usage_stats.total_tokens')} value={formatCredentialNumber(row.totalTokens)} />
-              <MetricPill label={t('usage_stats.cache_rate')} value={<TonePercent value={row.cacheRate} tone={cacheRateTone(row.cacheRate)} />} />
+              <MetricPill value={<RequestMetric total={row.totalRequests} success={row.successCount} failure={row.failureCount} />} />
+              <MetricPill value={<TonePercent value={row.successRate} tone={successRateTone(row.successRate)} />} />
+              <MetricPill value={formatCredentialNumber(row.totalTokens)} />
+              <MetricPill value={<TonePercent value={row.cacheReadRate} tone={cacheReadRateTone(row.cacheReadRate)} />} />
             </>
           )}
-          side={<AiProviderTrafficPanel row={row} />}
+          side={<CredentialHealthPanel displayName={row.displayName} health={row.credentialHealth} lastUsedAt={row.lastUsedText} statsUpdatedAt={row.statsUpdatedText} />}
           rowClassName={styles.aiProviderCredentialRow}
         />
       ))}
@@ -73,32 +110,4 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
       />
     </CredentialSectionShell>
   )
-}
-
-function AiProviderTrafficPanel({ row }: { row: AiProviderCredentialRow }) {
-  const { t } = useTranslation()
-  const lastUsed = formatDate(row.lastUsedText)
-  const statsUpdated = formatDate(row.statsUpdatedText)
-  if (!lastUsed && !statsUpdated) {
-    return null
-  }
-  return (
-    <div className={styles.credentialTrafficPanel}>
-      {lastUsed && <span>{t('usage_stats.credentials_last_used')}</span>}
-      {lastUsed && <strong>{lastUsed}</strong>}
-      {statsUpdated && <span>{t('usage_stats.credentials_stats_updated')}</span>}
-      {statsUpdated && <strong>{statsUpdated}</strong>}
-    </div>
-  )
-}
-
-function formatDate(value: string | undefined): string {
-  if (!value) {
-    return ''
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-  return date.toLocaleString()
 }

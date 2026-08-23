@@ -351,7 +351,6 @@ func computeRowCost(row costAllocationEventRow, pricing map[string]entities.Mode
 	needsPricing := helper.UsageTokenInputRequiresPricing(helper.UsageTokenCostInput{
 		InputTokens:         row.Input,
 		OutputTokens:        row.Output,
-		CachedTokens:        row.Cached,
 		CacheReadTokens:     row.CacheRead,
 		CacheCreationTokens: row.CacheWrite,
 	})
@@ -361,11 +360,10 @@ func computeRowCost(row costAllocationEventRow, pricing map[string]entities.Mode
 	if !hasPricing {
 		return 0
 	}
-	return helper.CalculateUsageTokenCost(helper.UsageTokenCostInput{
+	return helper.CalculateUsageTokenCostBreakdown(helper.UsageTokenCostInput{
 		InputTokens:         row.Input,
 		OutputTokens:        row.Output,
-		CachedTokens:        row.Cached,
 		CacheReadTokens:     row.CacheRead,
 		CacheCreationTokens: row.CacheWrite,
-	}, p)
+	}, p).TotalCostUSD
 }

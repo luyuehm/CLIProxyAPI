@@ -1,0 +1,16 @@
+# ──────────────────────────────────────────────────────────────────────
+#  CPA Usage Keeper Enterprise — 参考配置说明
+#  CPA 核心引擎的配置需要手动在 CPA 的 config.yaml 中开启以下选项。
+#  Keeper 本身无需额外的 config.yaml，所有配置通过 .env 管理。
+# ──────────────────────────────────────────────────────────────────────
+
+# CPA 侧需要开启的配置项（请修改 CPA 的 config.yaml，非本文件）：
+#
+# remote-management:
+#   allow-remote: true
+#   secret-key: "<与 .env 中 CPA_MANAGEMENT_KEY 一致>"
+#
+# usage-statistics-enabled: true
+# redis-usage-queue-retention-seconds: 60
+
+# 本文件保留作为企业版配置参考，实际部署时无需修改。

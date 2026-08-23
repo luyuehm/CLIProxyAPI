@@ -17,13 +17,10 @@ import (
 )
 
 type usageOverviewResponse struct {
-	Usage         usageOverviewPayload       `json:"usage"`
-	Summary       usageOverviewSummary       `json:"summary"`
-	Series        usageOverviewSeries        `json:"series"`
-	ServiceHealth usageOverviewServiceHealth `json:"service_health"`
-	Timezone      string                     `json:"timezone"`
-	RangeStart    *time.Time                 `json:"range_start,omitempty"`
-	RangeEnd      *time.Time                 `json:"range_end,omitempty"`
+	Usage    usageOverviewPayload `json:"usage"`
+	Summary  usageOverviewSummary `json:"summary"`
+	Series   usageOverviewSeries  `json:"series"`
+	Timezone string               `json:"timezone"`
 }
 
 type usageOverviewPayload struct {
@@ -34,51 +31,36 @@ type usageOverviewPayload struct {
 }
 
 type usageOverviewSummary struct {
-	RequestCount    int64   `json:"request_count"`
-	TokenCount      int64   `json:"token_count"`
-	WindowMinutes   int64   `json:"window_minutes"`
-	RPM             float64 `json:"rpm"`
-	TPM             float64 `json:"tpm"`
-	TotalCost       float64 `json:"total_cost"`
-	CostAvailable   bool    `json:"cost_available"`
-	InputTokens     int64   `json:"input_tokens"`
-	CachedTokens    int64   `json:"cached_tokens"`
-	ReasoningTokens int64   `json:"reasoning_tokens"`
+	RPM                   float64  `json:"rpm"`
+	TPM                   float64  `json:"tpm"`
+	TotalCost             float64  `json:"total_cost"`
+	CostAvailable         bool     `json:"cost_available"`
+	InputTokens           int64    `json:"input_tokens"`
+	CacheReadTokens       int64    `json:"cache_read_tokens"`
+	CacheCreationTokens   int64    `json:"cache_creation_tokens"`
+	ReasoningTokens       int64    `json:"reasoning_tokens"`
+	DailyAverageRequests  *float64 `json:"daily_average_requests,omitempty"`
+	DailyAverageTokens    *float64 `json:"daily_average_tokens,omitempty"`
+	DailyAverageCost      *float64 `json:"daily_average_cost,omitempty"`
+	DailyAverageRangeDays *float64 `json:"daily_average_range_days,omitempty"`
 }
 
 type usageOverviewSeries struct {
-	Requests  map[string]int64    `json:"requests"`
-	Tokens    map[string]int64    `json:"tokens"`
-	RPM       map[string]float64  `json:"rpm"`
-	TPM       map[string]float64  `json:"tpm"`
-	Cost      map[string]float64  `json:"cost"`
-	CacheRate map[string]*float64 `json:"cache_rate"`
-}
-
-type usageOverviewServiceHealth struct {
-	TotalSuccess  int64                             `json:"total_success"`
-	TotalFailure  int64                             `json:"total_failure"`
-	SuccessRate   float64                           `json:"success_rate"`
-	Rows          int                               `json:"rows"`
-	Columns       int                               `json:"columns"`
-	BucketSeconds int64                             `json:"bucket_seconds"`
-	WindowStart   time.Time                         `json:"window_start"`
-	WindowEnd     time.Time                         `json:"window_end"`
-	BlockDetails  []usageOverviewServiceHealthBlock `json:"block_details"`
-}
-
-type usageOverviewServiceHealthBlock struct {
-	StartTime time.Time `json:"start_time"`
-	EndTime   time.Time `json:"end_time"`
-	Success   int64     `json:"success"`
-	Failure   int64     `json:"failure"`
-	Rate      float64   `json:"rate"`
+	Buckets       []string   `json:"buckets"`
+	Requests      []int64    `json:"requests"`
+	Tokens        []int64    `json:"tokens"`
+	RPM           []float64  `json:"rpm"`
+	TPM           []float64  `json:"tpm"`
+	Cost          []float64  `json:"cost"`
+	CacheReadRate []*float64 `json:"cache_read_rate"`
 }
 
 type usageOverviewRealtime struct {
 	Window               string                            `json:"window"`
 	Timezone             string                            `json:"timezone"`
 	BucketSeconds        int64                             `json:"bucket_seconds"`
+	WindowStart          *time.Time                        `json:"window_start,omitempty"`
+	WindowEnd            *time.Time                        `json:"window_end,omitempty"`
 	TokenVelocity        []usageOverviewTokenVelocityPoint `json:"token_velocity"`
 	ResponseLevel        []usageOverviewResponseLevelPoint `json:"response_level"`
 	ResponseDistribution usageOverviewResponseDistribution `json:"response_distribution"`
@@ -91,6 +73,8 @@ type keyUsageOverviewRealtime struct {
 	Window               string                               `json:"window"`
 	Timezone             string                               `json:"timezone"`
 	BucketSeconds        int64                                `json:"bucket_seconds"`
+	WindowStart          *time.Time                           `json:"window_start,omitempty"`
+	WindowEnd            *time.Time                           `json:"window_end,omitempty"`
 	TokenVelocity        []usageOverviewTokenVelocityPoint    `json:"token_velocity"`
 	ResponseLevel        []usageOverviewResponseLevelPoint    `json:"response_level"`
 	ResponseDistribution usageOverviewResponseDistribution    `json:"response_distribution"`
@@ -120,14 +104,18 @@ type usageOverviewResponseAveragePoint struct {
 }
 
 type usageOverviewResponseParticle struct {
-	Bucket string `json:"bucket"`
-	MS     int64  `json:"ms"`
-	Count  int64  `json:"count"`
+	Bucket    string `json:"bucket"`
+	Timestamp string `json:"timestamp,omitempty"`
+	MS        int64  `json:"ms"`
+	Count     int64  `json:"count"`
 }
 
 type usageOverviewResponseDistributionSeries struct {
-	AverageLine []usageOverviewResponseAveragePoint `json:"average_line"`
-	Particles   []usageOverviewResponseParticle     `json:"particles"`
+	AverageLine    []usageOverviewResponseAveragePoint `json:"average_line"`
+	Particles      []usageOverviewResponseParticle     `json:"particles"`
+	TotalParticles int64                               `json:"total_particles"`
+	Sampled        bool                                `json:"sampled"`
+	MaxParticles   int                                 `json:"max_particles"`
 }
 
 type usageOverviewResponseDistribution struct {
@@ -150,6 +138,8 @@ type usageOverviewRealtimeBase struct {
 	Window               string
 	Timezone             string
 	BucketSeconds        int64
+	WindowStart          *time.Time
+	WindowEnd            *time.Time
 	TokenVelocity        []usageOverviewTokenVelocityPoint
 	ResponseLevel        []usageOverviewResponseLevelPoint
 	ResponseDistribution usageOverviewResponseDistribution
@@ -173,14 +163,11 @@ type usageOverviewRequestLevelPoint struct {
 }
 
 type usageOverviewCacheLevelPoint struct {
-	Bucket       string   `json:"bucket"`
-	CacheRate    *float64 `json:"cache_rate,omitempty"`
-	CachedTokens int64    `json:"cached_tokens"`
-	InputTokens  int64    `json:"input_tokens"`
-}
-
-var allowedKeyOverviewRanges = map[string]struct{}{
-	"4h": {}, "8h": {}, "12h": {}, "24h": {}, "today": {}, "yesterday": {}, "7d": {}, "30d": {},
+	Bucket              string   `json:"bucket"`
+	CacheReadRate       *float64 `json:"cache_read_rate,omitempty"`
+	CacheReadTokens     int64    `json:"cache_read_tokens"`
+	CacheCreationTokens int64    `json:"cache_creation_tokens"`
+	InputTokens         int64    `json:"input_tokens"`
 }
 
 func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsageProvider, cpaAPIKeyProvider service.CPAAPIKeyProvider, authHandler *authHandler) {
@@ -199,14 +186,14 @@ func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsagePro
 		if _, err := cpaAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), session.CPAAPIKeyID); err != nil {
 			if authHandler != nil {
 				authHandler.deleteSession(fmt.Sprint(token))
-				clearSessionCookie(c, authHandler.config.BasePath)
+				clearSessionCookie(c, authHandler.config.BasePath, resolveSessionToken(c).CookieKind)
 			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		filter, err := parseKeyOverviewFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		filter, err := parseKeyUsageOverviewTimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeUsageFilterParseError(c, err)
 			return
 		}
 		if authHandler != nil && !authHandler.allowKeyOverviewRequest(fmt.Sprint(token)) {
@@ -231,14 +218,14 @@ func registerKeyOverviewRoute(router gin.IRoutes, usageProvider service.UsagePro
 		if _, err := cpaAPIKeyProvider.FindActiveCPAAPIKeyByID(c.Request.Context(), session.CPAAPIKeyID); err != nil {
 			if authHandler != nil {
 				authHandler.deleteSession(fmt.Sprint(token))
-				clearSessionCookie(c, authHandler.config.BasePath)
+				clearSessionCookie(c, authHandler.config.BasePath, resolveSessionToken(c).CookieKind)
 			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		filter, err := parseUsageRealtimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		filter, err := parseKeyUsageRealtimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeUsageFilterParseError(c, err)
 			return
 		}
 		if authHandler != nil && !authHandler.allowKeyOverviewRequest(fmt.Sprint(token), "realtime") {
@@ -256,9 +243,9 @@ func registerUsageOverviewRoute(router gin.IRoutes, usageProvider service.UsageP
 			writeUsageOverviewResponse(c, usageProvider, servicedto.UsageFilter{})
 			return
 		}
-		filter, err := parseUsageFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
+		filter, err := parseUsageOverviewTimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeUsageFilterParseError(c, err)
 			return
 		}
 		writeUsageOverviewResponse(c, usageProvider, filter)
@@ -266,42 +253,27 @@ func registerUsageOverviewRoute(router gin.IRoutes, usageProvider service.UsageP
 	router.GET("/usage/overview/realtime", func(c *gin.Context) {
 		filter, err := parseUsageRealtimeFilterQuery(c.Request, timeutil.NormalizeStorageTime(time.Now()))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeUsageFilterParseError(c, err)
 			return
 		}
 		writeUsageOverviewRealtimeResponse(c, usageProvider, cpaAPIKeyProvider, filter)
 	})
 }
 
-func parseKeyOverviewFilterQuery(req *http.Request, anchor time.Time) (servicedto.UsageFilter, error) {
-	query := req.URL.Query()
-	if query.Get("start") != "" || query.Get("end") != "" {
-		return servicedto.UsageFilter{}, fmt.Errorf("custom ranges are not supported")
-	}
-	rangeValue := query.Get("range")
-	if _, ok := allowedKeyOverviewRanges[rangeValue]; !ok {
-		return servicedto.UsageFilter{}, fmt.Errorf("unsupported key overview range %q", rangeValue)
-	}
-	return parseUsageFilterQuery(req, anchor)
-}
-
 func writeUsageOverviewResponse(c *gin.Context, usageProvider service.UsageProvider, filter servicedto.UsageFilter) {
 	if usageProvider == nil {
 		c.JSON(http.StatusOK, usageOverviewResponse{
-			Usage:         buildUsageOverviewPayload(nil),
-			Summary:       usageOverviewSummary{},
-			Series:        emptyUsageOverviewSeries(),
-			ServiceHealth: usageOverviewServiceHealth{BlockDetails: []usageOverviewServiceHealthBlock{}},
-			Timezone:      time.Local.String(),
-			RangeStart:    filter.StartTime,
-			RangeEnd:      filter.EndTime,
+			Usage:    buildUsageOverviewPayload(nil),
+			Summary:  usageOverviewSummary{},
+			Series:   emptyUsageOverviewSeries(),
+			Timezone: time.Local.String(),
 		})
 		return
 	}
 
 	overview, err := usageProvider.GetUsageOverview(c.Request.Context(), filter)
 	if err != nil {
-		writeUsageOverviewProviderError(c, "get usage overview failed", err)
+		writeUsageProviderError(c, "get usage overview failed", err)
 		return
 	}
 
@@ -310,13 +282,10 @@ func writeUsageOverviewResponse(c *gin.Context, usageProvider service.UsageProvi
 		usage = overview.Usage
 	}
 	c.JSON(http.StatusOK, usageOverviewResponse{
-		Usage:         buildUsageOverviewPayload(usage),
-		Summary:       buildUsageOverviewSummary(overview),
-		Series:        buildUsageOverviewSeries(overview),
-		ServiceHealth: buildUsageOverviewServiceHealth(overview),
-		Timezone:      time.Local.String(),
-		RangeStart:    filter.StartTime,
-		RangeEnd:      filter.EndTime,
+		Usage:    buildUsageOverviewPayload(usage),
+		Summary:  buildUsageOverviewSummary(overview),
+		Series:   buildUsageOverviewSeries(overview),
+		Timezone: time.Local.String(),
 	})
 }
 
@@ -327,7 +296,7 @@ func writeUsageOverviewRealtimeResponse(c *gin.Context, usageProvider service.Us
 	}
 	realtime, err := usageProvider.GetUsageOverviewRealtime(c.Request.Context(), filter)
 	if err != nil {
-		writeUsageOverviewProviderError(c, "get usage overview realtime failed", err)
+		writeUsageProviderError(c, "get usage overview realtime failed", err)
 		return
 	}
 	apiKeyInfos, err := loadCPAAPIKeyInfos(c, cpaAPIKeyProvider)
@@ -344,13 +313,13 @@ func writeKeyUsageOverviewRealtimeResponse(c *gin.Context, usageProvider service
 	}
 	realtime, err := usageProvider.GetUsageOverviewRealtime(c.Request.Context(), filter)
 	if err != nil {
-		writeUsageOverviewProviderError(c, "get usage overview realtime failed", err)
+		writeUsageProviderError(c, "get usage overview realtime failed", err)
 		return
 	}
 	c.JSON(http.StatusOK, buildKeyUsageOverviewRealtime(realtime, filter.RealtimeWindow))
 }
 
-func writeUsageOverviewProviderError(c *gin.Context, message string, err error) {
+func writeUsageProviderError(c *gin.Context, message string, err error) {
 	if errors.Is(err, service.ErrInvalidID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid api_key_id"})
 		return
@@ -382,72 +351,45 @@ func buildUsageOverviewSummary(overview *servicedto.UsageOverviewSnapshot) usage
 		return usageOverviewSummary{}
 	}
 	return usageOverviewSummary{
-		RequestCount:    overview.Summary.RequestCount,
-		TokenCount:      overview.Summary.TokenCount,
-		WindowMinutes:   overview.Summary.WindowMinutes,
-		RPM:             overview.Summary.RPM,
-		TPM:             overview.Summary.TPM,
-		TotalCost:       overview.Summary.TotalCost,
-		CostAvailable:   overview.Summary.CostAvailable,
-		InputTokens:     overview.Summary.InputTokens,
-		CachedTokens:    overview.Summary.CachedTokens,
-		ReasoningTokens: overview.Summary.ReasoningTokens,
+		RPM:                   overview.Summary.RPM,
+		TPM:                   overview.Summary.TPM,
+		TotalCost:             overview.Summary.TotalCost,
+		CostAvailable:         overview.Summary.CostAvailable,
+		InputTokens:           overview.Summary.InputTokens,
+		CacheReadTokens:       overview.Summary.CacheReadTokens,
+		CacheCreationTokens:   overview.Summary.CacheCreationTokens,
+		ReasoningTokens:       overview.Summary.ReasoningTokens,
+		DailyAverageRequests:  overview.Summary.DailyAverageRequests,
+		DailyAverageTokens:    overview.Summary.DailyAverageTokens,
+		DailyAverageCost:      overview.Summary.DailyAverageCost,
+		DailyAverageRangeDays: overview.Summary.DailyAverageRangeDays,
 	}
 }
 
 func emptyUsageOverviewSeries() usageOverviewSeries {
 	return usageOverviewSeries{
-		Requests:  map[string]int64{},
-		Tokens:    map[string]int64{},
-		RPM:       map[string]float64{},
-		TPM:       map[string]float64{},
-		Cost:      map[string]float64{},
-		CacheRate: map[string]*float64{},
-	}
-}
-
-func mapUsageOverviewSeries(series servicedto.UsageOverviewSeries) usageOverviewSeries {
-	return usageOverviewSeries{
-		Requests:  cloneInt64Map(series.Requests),
-		Tokens:    cloneInt64Map(series.Tokens),
-		RPM:       cloneFloat64Map(series.RPM),
-		TPM:       cloneFloat64Map(series.TPM),
-		Cost:      cloneFloat64Map(series.Cost),
-		CacheRate: cloneFloat64PtrMap(series.CacheRate),
+		Buckets:       []string{},
+		Requests:      []int64{},
+		Tokens:        []int64{},
+		RPM:           []float64{},
+		TPM:           []float64{},
+		Cost:          []float64{},
+		CacheReadRate: []*float64{},
 	}
 }
 
 func buildUsageOverviewSeries(overview *servicedto.UsageOverviewSnapshot) usageOverviewSeries {
-	if overview == nil {
+	if overview == nil || overview.Series.Buckets == nil {
 		return emptyUsageOverviewSeries()
 	}
-	return mapUsageOverviewSeries(overview.Series)
-}
-
-func buildUsageOverviewServiceHealth(overview *servicedto.UsageOverviewSnapshot) usageOverviewServiceHealth {
-	if overview == nil {
-		return usageOverviewServiceHealth{BlockDetails: []usageOverviewServiceHealthBlock{}}
-	}
-	blocks := make([]usageOverviewServiceHealthBlock, 0, len(overview.Health.BlockDetails))
-	for _, block := range overview.Health.BlockDetails {
-		blocks = append(blocks, usageOverviewServiceHealthBlock{
-			StartTime: block.StartTime,
-			EndTime:   block.EndTime,
-			Success:   block.Success,
-			Failure:   block.Failure,
-			Rate:      block.Rate,
-		})
-	}
-	return usageOverviewServiceHealth{
-		TotalSuccess:  overview.Health.TotalSuccess,
-		TotalFailure:  overview.Health.TotalFailure,
-		SuccessRate:   overview.Health.SuccessRate,
-		Rows:          overview.Health.Rows,
-		Columns:       overview.Health.Columns,
-		BucketSeconds: overview.Health.BucketSeconds,
-		WindowStart:   overview.Health.WindowStart,
-		WindowEnd:     overview.Health.WindowEnd,
-		BlockDetails:  blocks,
+	return usageOverviewSeries{
+		Buckets:       overview.Series.Buckets,
+		Requests:      overview.Series.Requests,
+		Tokens:        overview.Series.Tokens,
+		RPM:           overview.Series.RPM,
+		TPM:           overview.Series.TPM,
+		Cost:          overview.Series.Cost,
+		CacheReadRate: overview.Series.CacheReadRate,
 	}
 }
 
@@ -457,6 +399,8 @@ func emptyUsageOverviewRealtime(window string) usageOverviewRealtime {
 		Window:               base.Window,
 		Timezone:             base.Timezone,
 		BucketSeconds:        base.BucketSeconds,
+		WindowStart:          base.WindowStart,
+		WindowEnd:            base.WindowEnd,
 		TokenVelocity:        base.TokenVelocity,
 		ResponseLevel:        base.ResponseLevel,
 		ResponseDistribution: base.ResponseDistribution,
@@ -477,6 +421,8 @@ func emptyKeyUsageOverviewRealtime(window string) keyUsageOverviewRealtime {
 		Window:               base.Window,
 		Timezone:             base.Timezone,
 		BucketSeconds:        base.BucketSeconds,
+		WindowStart:          base.WindowStart,
+		WindowEnd:            base.WindowEnd,
 		TokenVelocity:        base.TokenVelocity,
 		ResponseLevel:        base.ResponseLevel,
 		ResponseDistribution: base.ResponseDistribution,
@@ -525,6 +471,14 @@ func realtimeBucketSeconds(window string) int64 {
 	}
 }
 
+func usageOverviewOptionalTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	normalized := timeutil.NormalizeStorageTime(value)
+	return &normalized
+}
+
 func buildUsageOverviewRealtime(realtime *servicedto.UsageOverviewRealtime, window string, apiKeyInfos map[string]analysisAPIKeyInfo) usageOverviewRealtime {
 	if realtime == nil {
 		return emptyUsageOverviewRealtime(window)
@@ -533,6 +487,8 @@ func buildUsageOverviewRealtime(realtime *servicedto.UsageOverviewRealtime, wind
 		Window:               realtime.Window,
 		Timezone:             time.Local.String(),
 		BucketSeconds:        realtime.BucketSeconds,
+		WindowStart:          usageOverviewOptionalTime(realtime.WindowStart),
+		WindowEnd:            usageOverviewOptionalTime(realtime.WindowEnd),
 		TokenVelocity:        make([]usageOverviewTokenVelocityPoint, 0, len(realtime.TokenVelocity)),
 		ResponseLevel:        make([]usageOverviewResponseLevelPoint, 0, len(realtime.ResponseLevel)),
 		ResponseDistribution: mapUsageOverviewResponseDistribution(realtime.ResponseDistribution),
@@ -577,10 +533,11 @@ func buildUsageOverviewRealtime(realtime *servicedto.UsageOverviewRealtime, wind
 	}
 	for _, point := range realtime.CacheLevel {
 		result.CacheLevel = append(result.CacheLevel, usageOverviewCacheLevelPoint{
-			Bucket:       point.Bucket,
-			CacheRate:    point.CacheRate,
-			CachedTokens: point.CachedTokens,
-			InputTokens:  point.InputTokens,
+			Bucket:              point.Bucket,
+			CacheReadRate:       point.CacheReadRate,
+			CacheReadTokens:     point.CacheReadTokens,
+			CacheCreationTokens: point.CacheCreationTokens,
+			InputTokens:         point.InputTokens,
 		})
 	}
 	return result
@@ -594,6 +551,8 @@ func buildKeyUsageOverviewRealtime(realtime *servicedto.UsageOverviewRealtime, w
 		Window:               realtime.Window,
 		Timezone:             time.Local.String(),
 		BucketSeconds:        realtime.BucketSeconds,
+		WindowStart:          usageOverviewOptionalTime(realtime.WindowStart),
+		WindowEnd:            usageOverviewOptionalTime(realtime.WindowEnd),
 		TokenVelocity:        make([]usageOverviewTokenVelocityPoint, 0, len(realtime.TokenVelocity)),
 		ResponseLevel:        make([]usageOverviewResponseLevelPoint, 0, len(realtime.ResponseLevel)),
 		ResponseDistribution: mapUsageOverviewResponseDistribution(realtime.ResponseDistribution),
@@ -635,10 +594,11 @@ func buildKeyUsageOverviewRealtime(realtime *servicedto.UsageOverviewRealtime, w
 	}
 	for _, point := range realtime.CacheLevel {
 		result.CacheLevel = append(result.CacheLevel, usageOverviewCacheLevelPoint{
-			Bucket:       point.Bucket,
-			CacheRate:    point.CacheRate,
-			CachedTokens: point.CachedTokens,
-			InputTokens:  point.InputTokens,
+			Bucket:              point.Bucket,
+			CacheReadRate:       point.CacheReadRate,
+			CacheReadTokens:     point.CacheReadTokens,
+			CacheCreationTokens: point.CacheCreationTokens,
+			InputTokens:         point.InputTokens,
 		})
 	}
 	return result
@@ -653,8 +613,11 @@ func mapUsageOverviewResponseDistribution(distribution servicedto.RealtimeRespon
 
 func mapUsageOverviewResponseDistributionSeries(series servicedto.RealtimeResponseDistributionSeries) usageOverviewResponseDistributionSeries {
 	return usageOverviewResponseDistributionSeries{
-		AverageLine: mapUsageOverviewResponseAveragePoints(series.AverageLine),
-		Particles:   mapUsageOverviewResponseParticles(series.Particles),
+		AverageLine:    mapUsageOverviewResponseAveragePoints(series.AverageLine),
+		Particles:      mapUsageOverviewResponseParticles(series.Particles),
+		TotalParticles: series.TotalParticles,
+		Sampled:        series.Sampled,
+		MaxParticles:   series.MaxParticles,
 	}
 }
 
@@ -673,9 +636,10 @@ func mapUsageOverviewResponseParticles(points []servicedto.RealtimeResponseParti
 	result := make([]usageOverviewResponseParticle, 0, len(points))
 	for _, point := range points {
 		result = append(result, usageOverviewResponseParticle{
-			Bucket: point.Bucket,
-			MS:     point.MS,
-			Count:  point.Count,
+			Bucket:    point.Bucket,
+			Timestamp: point.Timestamp,
+			MS:        point.MS,
+			Count:     point.Count,
 		})
 	}
 	return result
@@ -718,42 +682,4 @@ func mapUsageOverviewRealtimeAPIKeyTopItems(items []servicedto.RealtimeUsageTopI
 		})
 	}
 	return result
-}
-
-func cloneInt64Map(source map[string]int64) map[string]int64 {
-	if len(source) == 0 {
-		return map[string]int64{}
-	}
-	cloned := make(map[string]int64, len(source))
-	for key, value := range source {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneFloat64Map(source map[string]float64) map[string]float64 {
-	if len(source) == 0 {
-		return map[string]float64{}
-	}
-	cloned := make(map[string]float64, len(source))
-	for key, value := range source {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneFloat64PtrMap(source map[string]*float64) map[string]*float64 {
-	if len(source) == 0 {
-		return map[string]*float64{}
-	}
-	cloned := make(map[string]*float64, len(source))
-	for key, value := range source {
-		if value == nil {
-			cloned[key] = nil
-			continue
-		}
-		copied := *value
-		cloned[key] = &copied
-	}
-	return cloned
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service"
@@ -13,10 +14,11 @@ import (
 // userAPIHandler 提供用户管理与 RBAC 认证接口（admin/operator/viewer 角色）。
 type userAPIHandler struct {
 	users service.UserProvider
+	auth  *auth.UserJWTAuth
 }
 
-func NewUserAPIHandler(users service.UserProvider) *userAPIHandler {
-	return &userAPIHandler{users: users}
+func NewUserAPIHandler(users service.UserProvider, auth *auth.UserJWTAuth) *userAPIHandler {
+	return &userAPIHandler{users: users, auth: auth}
 }
 
 // registerUserRoutes 注册用户管理相关路由。
@@ -60,8 +62,14 @@ func (h *userAPIHandler) login(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "account is disabled"})
 		return
 	}
+	token, err := h.auth.GenerateToken(user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"user": user,
+		"user":   user,
+		"token":  token,
 	})
 }
 

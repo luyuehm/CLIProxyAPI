@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,13 +16,12 @@ import (
 )
 
 const (
-	DefaultTimeZone                 = "Asia/Shanghai"
-	RedisQueueBatchSizeDefault      = 10000
-	MetadataSyncIntervalDefault     = 30 * time.Second
-	QuotaAutoRefreshIntervalDefault = 5 * time.Minute
-	QuotaAutoRefreshIntervalMin     = 60 * time.Second
-	QuotaRefreshWorkerLimitDefault  = 10
-	QuotaRefreshWorkerLimitMax      = 100
+	DefaultTimeZone                = "Asia/Shanghai"
+	publicLoginPasswordPlaceholder = "replace-with-your-login-password"
+	RedisQueueBatchSizeDefault     = 10000
+	MetadataSyncIntervalDefault    = 30 * time.Second
+	QuotaRefreshWorkerLimitDefault = 10
+	QuotaRefreshWorkerLimitMax     = 100
 )
 
 var (
@@ -35,12 +35,16 @@ var (
 )
 
 type Config struct {
+	// AppHost 是 Web 服务监听主机；空值保持监听所有可用网络接口的现有行为。
+	AppHost string
 	// AppPort 是 Web 服务监听端口。
 	AppPort string
 	// AppBasePath 是 Web 服务部署子路径，空值表示根路径。
 	AppBasePath string
 	// CPAPublicURL 是浏览器访问 CPA 的公开地址；为空时前端按同源根路径跳转。
 	CPAPublicURL string
+	// TrustedProxyCIDRs 是除本机 loopback 外允许提供客户端转发地址的代理网段。
+	TrustedProxyCIDRs []string
 	// TLSEnabled 控制是否以 HTTPS 模式启动 HTTP 服务。
 	TLSEnabled bool
 	// TLSCertFile 是 HTTPS 证书文件路径。
@@ -51,6 +55,8 @@ type Config struct {
 	CPABaseURL string
 	// CPAManagementKey 是访问 CPA 管理数据的密钥。
 	CPAManagementKey string
+	// CPARequestLogAccessEnabled 控制是否允许通过 Keeper 访问 CPA request log。
+	CPARequestLogAccessEnabled bool
 	// RedisQueueAddr 是 CPA management data stream 的 TCP 地址，空值时按 CPA_BASE_URL 推导。
 	RedisQueueAddr string
 	// RedisQueueTLS 控制是否使用 TLS 连接 Redis 队列。
@@ -61,10 +67,6 @@ type Config struct {
 	RedisQueueIdleInterval time.Duration
 	// MetadataSyncInterval 是 auth files 和 provider metadata 的固定刷新间隔。
 	MetadataSyncInterval time.Duration
-	// QuotaAutoRefreshEnabled 控制是否启动 Auth Files 限额自动刷新后台任务。
-	QuotaAutoRefreshEnabled bool
-	// QuotaAutoRefreshInterval 是 Auth Files 限额自动刷新的固定调度间隔。
-	QuotaAutoRefreshInterval time.Duration
 	// QuotaRefreshWorkerLimit 是 Auth Files 限额刷新队列的最大并发数。
 	QuotaRefreshWorkerLimit int
 	// WorkDir 是应用工作目录，数据库、日志和备份默认从这里派生。
@@ -111,6 +113,7 @@ type Config struct {
 
 type LoadOptions struct {
 	EnvFile string
+	AppHost string
 }
 
 var executableDir = func() (string, error) {
@@ -123,6 +126,10 @@ var executableDir = func() (string, error) {
 
 func LoadFromEnv() (*Config, error) {
 	return Load(LoadOptions{})
+}
+
+func (cfg Config) ListenAddress() string {
+	return net.JoinHostPort(cfg.AppHost, cfg.AppPort)
 }
 
 func Load(options LoadOptions) (*Config, error) {
@@ -151,19 +158,6 @@ func Load(options LoadOptions) (*Config, error) {
 	}
 	if redisQueueIdleInterval <= 0 {
 		return nil, fmt.Errorf("REDIS_QUEUE_IDLE_INTERVAL must be positive")
-	}
-
-	quotaAutoRefreshEnabled, err := getBool("QUOTA_AUTO_REFRESH_ENABLED", false)
-	if err != nil {
-		return nil, err
-	}
-
-	quotaAutoRefreshInterval, err := getDuration("QUOTA_AUTO_REFRESH_INTERVAL", QuotaAutoRefreshIntervalDefault)
-	if err != nil {
-		return nil, err
-	}
-	if quotaAutoRefreshInterval < QuotaAutoRefreshIntervalMin {
-		return nil, fmt.Errorf("QUOTA_AUTO_REFRESH_INTERVAL must be >= 60s")
 	}
 
 	quotaRefreshWorkerLimit, err := getInt("QUOTA_REFRESH_WORKER_LIMIT", QuotaRefreshWorkerLimitDefault)
@@ -202,7 +196,6 @@ func Load(options LoadOptions) (*Config, error) {
 	if backupRetentionDays < 0 {
 		return nil, fmt.Errorf("BACKUP_RETENTION_DAYS must be non-negative")
 	}
-
 	logFileEnabled, err := getBool("LOG_FILE_ENABLED", true)
 	if err != nil {
 		return nil, err
@@ -223,15 +216,12 @@ func Load(options LoadOptions) (*Config, error) {
 		return nil, fmt.Errorf("AUTH_SESSION_TTL must be positive")
 	}
 
-	userTokenExpiry, err := getDuration("USER_TOKEN_EXPIRY_HOURS", 24*time.Hour)
+	authEnabledValue := strings.TrimSpace(os.Getenv("AUTH_ENABLED"))
+	authEnabled, err := getBool("AUTH_ENABLED", true)
 	if err != nil {
 		return nil, err
 	}
-	if userTokenExpiry <= 0 {
-		return nil, fmt.Errorf("USER_TOKEN_EXPIRY_HOURS must be positive")
-	}
-
-	authEnabled, err := getBool("AUTH_ENABLED", false)
+	trustedProxyCIDRs, err := getCIDRs("TRUSTED_PROXY_CIDRS")
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +239,10 @@ func Load(options LoadOptions) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cpaRequestLogAccessEnabled, err := getBool("CPA_REQUEST_LOG_ACCESS_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
 
 	appBasePath, err := normalizeBasePath(strings.TrimSpace(os.Getenv("APP_BASE_PATH")))
 	if err != nil {
@@ -258,42 +252,46 @@ func Load(options LoadOptions) (*Config, error) {
 	workDir := getString("WORK_DIR", DefaultWorkDir)
 
 	cfg := &Config{
-		AppPort:                  getString("APP_PORT", "8080"),
-		AppBasePath:              appBasePath,
-		CPAPublicURL:             strings.TrimSpace(os.Getenv("CPA_PUBLIC_URL")),
-		TLSEnabled:               tlsEnabled,
-		TLSCertFile:              strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
-		TLSKeyFile:               strings.TrimSpace(os.Getenv("TLS_KEY_FILE")),
-		CPABaseURL:               strings.TrimSpace(os.Getenv("CPA_BASE_URL")),
-		CPAManagementKey:         strings.TrimSpace(os.Getenv("CPA_MANAGEMENT_KEY")),
-		RedisQueueAddr:           strings.TrimSpace(os.Getenv("REDIS_QUEUE_ADDR")),
-		RedisQueueTLS:            redisQueueTLS,
-		RedisQueueBatchSize:      redisQueueBatchSize,
-		RedisQueueIdleInterval:   redisQueueIdleInterval,
-		MetadataSyncInterval:     MetadataSyncIntervalDefault,
-		QuotaAutoRefreshEnabled:  quotaAutoRefreshEnabled,
-		QuotaAutoRefreshInterval: quotaAutoRefreshInterval,
-		QuotaRefreshWorkerLimit:  quotaRefreshWorkerLimit,
-		WorkDir:                  workDir,
-		SQLitePath:               filepath.Join(workDir, workDirDatabaseName),
-		BackupEnabled:            backupEnabled,
-		BackupDir:                filepath.Join(workDir, workDirBackupsName),
-		BackupInterval:           backupInterval,
-		BackupRetentionDays:      backupRetentionDays,
-		RequestTimeout:           requestTimeout,
-		TLSSkipVerify:            tlsSkipVerify,
-		LogLevel:                 getString("LOG_LEVEL", "info"),
-		LogFileEnabled:           logFileEnabled,
-		LogDir:                   filepath.Join(workDir, workDirLogsName),
-		LogRetentionDays:         logRetentionDays,
-		AuthEnabled:              authEnabled,
-		LoginPassword:            strings.TrimSpace(os.Getenv("LOGIN_PASSWORD")),
-		AuthSessionTTL:           authSessionTTL,
-		UserAdminUsername:        getString("USER_ADMIN_USERNAME", "admin"),
-		UserAdminPassword:        getString("USER_ADMIN_PASSWORD", "admin123"),
-		UserAdminEmail:           getString("USER_ADMIN_EMAIL", "admin@keeper.local"),
-		UserJWTSecret:            getString("USER_JWT_SECRET", "change-me-in-production"),
-		UserTokenExpiry:          userTokenExpiry,
+		AppHost:                    strings.TrimSpace(os.Getenv("APP_HOST")),
+		AppPort:                    getString("APP_PORT", "8080"),
+		AppBasePath:                appBasePath,
+		CPAPublicURL:               strings.TrimSpace(os.Getenv("CPA_PUBLIC_URL")),
+		TrustedProxyCIDRs:          trustedProxyCIDRs,
+		TLSEnabled:                 tlsEnabled,
+		TLSCertFile:                strings.TrimSpace(os.Getenv("TLS_CERT_FILE")),
+		TLSKeyFile:                 strings.TrimSpace(os.Getenv("TLS_KEY_FILE")),
+		CPABaseURL:                 strings.TrimSpace(os.Getenv("CPA_BASE_URL")),
+		CPAManagementKey:           strings.TrimSpace(os.Getenv("CPA_MANAGEMENT_KEY")),
+		CPARequestLogAccessEnabled: cpaRequestLogAccessEnabled,
+		RedisQueueAddr:             strings.TrimSpace(os.Getenv("REDIS_QUEUE_ADDR")),
+		RedisQueueTLS:              redisQueueTLS,
+		RedisQueueBatchSize:        redisQueueBatchSize,
+		RedisQueueIdleInterval:     redisQueueIdleInterval,
+		MetadataSyncInterval:       MetadataSyncIntervalDefault,
+		QuotaRefreshWorkerLimit:    quotaRefreshWorkerLimit,
+		WorkDir:                    workDir,
+		SQLitePath:                 filepath.Join(workDir, workDirDatabaseName),
+		BackupEnabled:              backupEnabled,
+		BackupDir:                  filepath.Join(workDir, workDirBackupsName),
+		BackupInterval:             backupInterval,
+		BackupRetentionDays:        backupRetentionDays,
+		RequestTimeout:             requestTimeout,
+		TLSSkipVerify:              tlsSkipVerify,
+		LogLevel:                   getString("LOG_LEVEL", "info"),
+		LogFileEnabled:             logFileEnabled,
+		LogDir:                     filepath.Join(workDir, workDirLogsName),
+		LogRetentionDays:           logRetentionDays,
+		AuthEnabled:                authEnabled,
+		LoginPassword:              strings.TrimSpace(os.Getenv("LOGIN_PASSWORD")),
+		AuthSessionTTL:             authSessionTTL,
+		UserAdminUsername:          getString("USER_ADMIN_USERNAME", "admin"),
+		UserAdminPassword:          getString("USER_ADMIN_PASSWORD", "admin123"),
+		UserAdminEmail:             getString("USER_ADMIN_EMAIL", "admin@keeper.local"),
+		UserJWTSecret:              getString("USER_JWT_SECRET", "change-me-in-production"),
+		UserTokenExpiry:            getUserTokenExpiry(),
+	}
+	if appHost := strings.TrimSpace(options.AppHost); appHost != "" {
+		cfg.AppHost = appHost
 	}
 	if cfg.CPABaseURL == "" {
 		return nil, fmt.Errorf("CPA_BASE_URL is required")
@@ -301,8 +299,16 @@ func Load(options LoadOptions) (*Config, error) {
 	if cfg.CPAManagementKey == "" {
 		return nil, fmt.Errorf("CPA_MANAGEMENT_KEY is required")
 	}
-	if cfg.AuthEnabled && cfg.LoginPassword == "" {
-		return nil, fmt.Errorf("LOGIN_PASSWORD is required when AUTH_ENABLED is true")
+	if cfg.AuthEnabled {
+		if cfg.LoginPassword == "" && authEnabledValue == "" {
+			return nil, fmt.Errorf("AUTH_ENABLED is not set, so authentication defaults to true; LOGIN_PASSWORD is required")
+		}
+		if cfg.LoginPassword == "" {
+			return nil, fmt.Errorf("LOGIN_PASSWORD is required when AUTH_ENABLED is true")
+		}
+		if cfg.LoginPassword == publicLoginPasswordPlaceholder {
+			return nil, fmt.Errorf("LOGIN_PASSWORD must not use the public example value %q", publicLoginPasswordPlaceholder)
+		}
 	}
 	if cfg.TLSEnabled {
 		if cfg.TLSCertFile == "" {
@@ -435,6 +441,32 @@ func getString(key, fallback string) string {
 	return value
 }
 
+func getCIDRs(key string) ([]string, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		candidate := strings.TrimSpace(part)
+		if candidate == "" {
+			return nil, fmt.Errorf("%s must contain non-empty CIDR values", key)
+		}
+		_, network, err := net.ParseCIDR(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("%s contains invalid CIDR %q: %w", key, candidate, err)
+		}
+		ones, _ := network.Mask.Size()
+		if ones == 0 {
+			return nil, fmt.Errorf("%s must not trust every address via %q", key, candidate)
+		}
+		result = append(result, network.String())
+	}
+	return result, nil
+}
+
 func getDuration(key string, fallback time.Duration) (time.Duration, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -469,4 +501,15 @@ func getInt(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be a valid integer: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func getUserTokenExpiry() time.Duration {
+	expiry, err := getDuration("USER_TOKEN_EXPIRY_HOURS", 24*time.Hour)
+	if err != nil {
+		return 24 * time.Hour
+	}
+	if expiry <= 0 {
+		return 24 * time.Hour
+	}
+	return expiry
 }

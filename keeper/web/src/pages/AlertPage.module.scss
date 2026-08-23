@@ -5,10 +5,10 @@
 }
 
 .pageFrame {
-  background: var(--color-surface, #fff);
+  background: var(--bg-primary);
   border-radius: 12px;
   padding: 1.5rem;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow);
 }
 
 .header {
@@ -29,7 +29,7 @@
 .subtitle {
   margin: 0.25rem 0 0;
   font-size: 0.875rem;
-  color: var(--color-text-secondary, #666);
+  color: var(--text-secondary);
 }
 
 .headerActions {
@@ -41,7 +41,7 @@
 .tabs {
   display: flex;
   gap: 0;
-  border-bottom: 1px solid var(--color-border, #e0e0e0);
+  border-bottom: 1px solid var(--border-color);
   margin-bottom: 1.5rem;
 }
 
@@ -52,18 +52,18 @@
   border: none;
   background: none;
   cursor: pointer;
-  color: var(--color-text-secondary, #666);
+  color: var(--text-secondary);
   border-bottom: 2px solid transparent;
   transition: color 0.15s, border-color 0.15s;
 }
 
 .tab:hover {
-  color: var(--color-text-primary, #333);
+  color: var(--text-primary);
 }
 
 .tabActive {
-  color: var(--color-primary, #1677ff);
-  border-bottom-color: var(--color-primary, #1677ff);
+  color: var(--primary-color);
+  border-bottom-color: var(--primary-color);
 }
 
 .notice {
@@ -74,15 +74,15 @@
 }
 
 .noticeSuccess {
-  background: #f6ffed;
-  border: 1px solid #b7eb8f;
-  color: #389e0d;
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
 }
 
 .noticeError {
-  background: #fff2f0;
-  border: 1px solid #ffccc7;
-  color: #cf1322;
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
 }
 
 .errorBox {
@@ -90,9 +90,9 @@
   border-radius: 6px;
   margin-bottom: 1rem;
   font-size: 0.875rem;
-  background: #fff2f0;
-  border: 1px solid #ffccc7;
-  color: #cf1322;
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
 }
 
 .loadingRow {
@@ -101,7 +101,7 @@
   justify-content: center;
   gap: 0.5rem;
   padding: 3rem 0;
-  color: var(--color-text-secondary, #666);
+  color: var(--text-secondary);
   font-size: 0.875rem;
 }
 
@@ -119,21 +119,21 @@
   text-align: left;
   padding: 0.625rem 0.75rem;
   font-weight: 600;
-  color: var(--color-text-secondary, #666);
-  border-bottom: 2px solid var(--color-border, #e0e0e0);
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
   white-space: nowrap;
 }
 
 .table td {
   padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--color-border, #f0f0f0);
+  border-bottom: 1px solid var(--border-color);
   vertical-align: middle;
 }
 
 .emptyCell {
   text-align: center;
   padding: 2rem 0.75rem !important;
-  color: var(--color-text-secondary, #999);
+  color: var(--text-muted);
 }
 
 .actions {
@@ -151,17 +151,17 @@
 }
 
 .platformFeishu {
-  background: #e6f4ff;
+  background: color-mix(in srgb, #1677ff 14%, transparent);
   color: #1677ff;
 }
 
 .platformDingtalk {
-  background: #e6fffb;
+  background: color-mix(in srgb, #00b96b 14%, transparent);
   color: #00b96b;
 }
 
 .platformWecom {
-  background: #fff7e6;
+  background: color-mix(in srgb, #d46b08 14%, transparent);
   color: #d46b08;
 }
 
@@ -174,28 +174,32 @@
 }
 
 .statusEnabled {
-  background: #f6ffed;
-  color: #389e0d;
+  background: var(--success-badge-bg);
+  color: var(--success-badge-text);
+  border: 1px solid var(--success-badge-border);
 }
 
 .statusDisabled {
-  background: #f5f5f5;
-  color: #999;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted);
 }
 
 .statusPending {
-  background: #fff7e6;
-  color: #d46b08;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border: 1px solid var(--warning-border);
 }
 
 .statusSent {
-  background: #f6ffed;
-  color: #389e0d;
+  background: var(--success-badge-bg);
+  color: var(--success-badge-text);
+  border: 1px solid var(--success-badge-border);
 }
 
 .statusFailed {
-  background: #fff2f0;
-  color: #cf1322;
+  background: var(--failure-badge-bg);
+  color: var(--failure-badge-text);
+  border: 1px solid var(--failure-badge-border);
 }
 
 .form {
@@ -213,7 +217,7 @@
 .formLabel {
   font-size: 0.8125rem;
   font-weight: 500;
-  color: var(--color-text-primary, #333);
+  color: var(--text-primary);
 }
 
 .eventMessage {
@@ -225,7 +229,7 @@
 }
 
 .eventError {
-  color: #cf1322;
+  color: var(--error);
   font-size: 0.8125rem;
   max-width: 200px;
   overflow: hidden;

@@ -7,9 +7,10 @@ import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
 import { useThemeStore } from '@/stores';
 import type { Theme } from '@/types';
 import { BrandLink } from '@/components/BrandLink';
+import { userLogin } from '@/lib/api';
 import styles from './LoginPage.module.scss';
 
-type LoginMode = 'admin' | 'api_key';
+type LoginMode = 'admin' | 'api_key' | 'user';
 
 const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
   { value: 'white', labelKey: 'usage_stats.theme_light' },
@@ -39,6 +40,10 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
   const [mode, setMode] = useState<LoginMode>('admin');
   const [password, setPassword] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [username, setUsername] = useState('');
+  const [userPassword, setUserPassword] = useState('');
+  const [userError, setUserError] = useState('');
+  const [userLoading, setUserLoading] = useState(false);
   const activeError = getLoginErrorForMode(mode, { adminError, apiKeyError });
   const themeOptions = useMemo(
     () => THEME_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -47,6 +52,20 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (mode === 'user') {
+      setUserLoading(true);
+      setUserError('');
+      try {
+        const { user, token } = await userLogin(username, userPassword);
+        localStorage.setItem('cpa_keeper_jwt', JSON.stringify({ user, username: user.username, token }));
+        window.location.reload();
+      } catch (err) {
+        setUserError(err instanceof Error ? err.message : 'Login failed');
+      } finally {
+        setUserLoading(false);
+      }
+      return;
+    }
     if (mode === 'api_key') {
       await onAPIKeySubmit(apiKey);
       return;
@@ -54,7 +73,7 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
     await onPasswordSubmit(password);
   };
 
-  const canSubmit = mode === 'api_key' ? Boolean(apiKey.trim()) : Boolean(password.trim());
+  const canSubmit = mode === 'api_key' ? Boolean(apiKey.trim()) : mode === 'user' ? Boolean(username.trim()) && Boolean(userPassword.trim()) : Boolean(password.trim());
 
   return (
     <div className={styles.pageShell}>
@@ -113,10 +132,44 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
             >
               {t('auth.api_key_tab')}
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === 'user'}
+              className={`${styles.tab} ${mode === 'user' ? styles.tabActive : ''}`.trim()}
+              onClick={() => setMode('user')}
+              disabled={loading}
+            >
+              {t('auth.user_tab')}
+            </button>
           </div>
 
           <form className={styles.form} onSubmit={(event) => void handleSubmit(event)}>
-            {mode === 'api_key' ? (
+            {mode === 'user' ? (
+              <>
+                <Input
+                  label={t('auth.user_username_label')}
+                  placeholder={t('auth.user_username_placeholder')}
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  error={userError || undefined}
+                  disabled={userLoading}
+                />
+                <Input
+                  type="password"
+                  autoComplete="current-password"
+                  label={t('auth.user_password_label')}
+                  placeholder={t('auth.user_password_placeholder')}
+                  value={userPassword}
+                  onChange={(event) => setUserPassword(event.target.value)}
+                  disabled={userLoading}
+                />
+                <p className={styles.formHint}>{t('auth.user_hint')}</p>
+                <Button type="submit" fullWidth loading={userLoading} disabled={!canSubmit}>
+                  {t('auth.user_login_submit')}
+                </Button>
+              </>
+            ) : mode === 'api_key' ? (
               <>
                 <Input
                   type="password"
@@ -129,6 +182,9 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
                   disabled={loading}
                 />
                 <p className={styles.formHint}>{t('auth.api_key_hint')}</p>
+                <Button type="submit" fullWidth loading={loading} disabled={!canSubmit}>
+                  {t('auth.api_key_login_submit')}
+                </Button>
               </>
             ) : (
               <>
@@ -143,11 +199,11 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
                   disabled={loading}
                 />
                 <p className={styles.formHint}>{t('auth.password_hint')}</p>
+                <Button type="submit" fullWidth loading={loading} disabled={!canSubmit}>
+                  {t('auth.login_submit')}
+                </Button>
               </>
             )}
-            <Button type="submit" fullWidth loading={loading} disabled={!canSubmit}>
-              {mode === 'api_key' ? t('auth.api_key_login_submit') : t('auth.login_submit')}
-            </Button>
           </form>
         </Card>
       </div>

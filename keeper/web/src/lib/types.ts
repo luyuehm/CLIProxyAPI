@@ -1,36 +1,5 @@
 export type AuthRole = 'admin' | 'api_key_viewer'
 
-export type UserRole = 'admin' | 'operator' | 'viewer'
-
-export interface User {
-  id: string
-  username: string
-  email: string
-  role: UserRole
-  api_key?: string
-  quota: number
-  used: number
-  active: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface UserCreateRequest {
-  username: string
-  email: string
-  password: string
-  role: UserRole
-  quota: number
-}
-
-export interface UserUpdateRequest {
-  email?: string
-  password?: string
-  role?: UserRole
-  quota?: number
-  active?: boolean
-}
-
 export interface AuthSessionAPIKeySummary {
   display_key: string
   alias?: string
@@ -42,18 +11,56 @@ export interface AuthSessionResponse {
   api_key?: AuthSessionAPIKeySummary
 }
 
+export type AuthManagedSessionKind = 'admin' | 'api_key'
+export type AuthManagedSessionSource = 'standard' | 'embed'
+
+export interface AuthManagedSessionItem {
+  id: string
+  kind: AuthManagedSessionKind
+  role: AuthRole
+  source?: AuthManagedSessionSource
+  current?: boolean
+  loginAt?: string
+  lastSeenAt?: string
+  expiresAt?: string
+  loginIp?: string
+  lastSeenIp?: string
+  userAgent?: string
+  apiKeyId?: string
+  label?: string
+  displayKey?: string
+}
+
+export interface AuthManagedSessionsResponse {
+  items: AuthManagedSessionItem[]
+}
+
 export interface StatusResponse {
   running: boolean
   sync_running: boolean
   timezone: string
-  version?: string
-  updateCheckEnabled?: boolean
-  quotaAutoRefreshEnabled?: boolean
   cpa_public_url?: string
-  last_run_at?: string
+  cpa_request_log_access_enabled?: boolean
   last_error?: string
   last_warning?: string
   last_status?: string
+}
+
+export type QuotaAutoRefreshScheduleUnit = 'minute' | 'hour' | 'day' | 'week'
+
+export interface QuotaAutoRefreshSchedule {
+  unit: QuotaAutoRefreshScheduleUnit
+  value: number
+}
+
+export interface QuotaAutoRefreshSettings {
+  enabled: boolean
+  schedule: QuotaAutoRefreshSchedule | null
+}
+
+export interface VersionResponse {
+  version: string
+  updateCheckEnabled: boolean
 }
 
 export interface UpdateCheckResponse {
@@ -72,45 +79,65 @@ export interface UsageOverviewUsageSnapshot {
 }
 
 export interface UsageOverviewSummary {
-  request_count: number
-  token_count: number
-  window_minutes: number
   rpm: number
   tpm: number
   total_cost: number
-  cost_available: boolean
-  input_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	cost_available: boolean
+	input_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
+  daily_average_requests?: number
+  daily_average_tokens?: number
+  daily_average_cost?: number
+  daily_average_range_days?: number
 }
 
 export interface UsageOverviewSeries {
-  requests: Record<string, number>
-  tokens: Record<string, number>
-  rpm: Record<string, number>
-  tpm: Record<string, number>
-  cost: Record<string, number>
-  cache_rate: Record<string, number | null>
+  buckets: string[]
+  requests: number[]
+  tokens: number[]
+  rpm: number[]
+  tpm: number[]
+  cost: number[]
+	cache_read_rate: Array<number | null>
 }
 
-export interface UsageOverviewServiceHealthBlock {
+export type UsageActivityWindow = 'day' | 'week' | 'month' | 'year'
+
+export interface UsageActivityBlock {
   start_time: string
   end_time: string
   success: number
   failure: number
   rate: number
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	total_tokens: number
 }
 
-export interface UsageOverviewServiceHealth {
+export interface UsageActivityResponse {
+  window: UsageActivityWindow
+  grain: 'short' | 'medium' | 'long' | 'daily'
+  timezone?: string
   total_success: number
   total_failure: number
   success_rate: number
-  rows?: number
-  columns?: number
-  bucket_seconds?: number
-  window_start?: string
-  window_end?: string
-  block_details: UsageOverviewServiceHealthBlock[]
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	total_tokens: number
+  rows: number
+  columns: number
+  bucket_seconds: number
+  window_start: string
+  window_end: string
+  blocks: UsageActivityBlock[]
 }
 
 export type OverviewRealtimeWindow = '15m' | '30m' | '60m'
@@ -137,6 +164,7 @@ export interface RealtimeResponseAveragePoint {
 
 export interface RealtimeResponseParticle {
   bucket: string
+  timestamp?: string
   ms: number
   count: number
 }
@@ -144,6 +172,9 @@ export interface RealtimeResponseParticle {
 export interface RealtimeResponseDistributionSeries {
   average_line: RealtimeResponseAveragePoint[]
   particles: RealtimeResponseParticle[]
+  total_particles?: number
+  sampled?: boolean
+  max_particles?: number
 }
 
 export interface RealtimeResponseDistribution {
@@ -174,16 +205,19 @@ export interface RealtimeRequestLevelPoint {
 }
 
 export interface RealtimeCacheLevelPoint {
-  bucket: string
-  cache_rate?: number | null
-  cached_tokens: number
-  input_tokens: number
+	bucket: string
+	cache_read_rate?: number | null
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	input_tokens: number
 }
 
 export interface OverviewRealtimeBlock {
   window: OverviewRealtimeWindow
   timezone?: string
   bucket_seconds: number
+  window_start?: string
+  window_end?: string
   token_velocity: RealtimeTokenVelocityPoint[]
   response_level: RealtimeResponseLevelPoint[]
   response_distribution: RealtimeResponseDistribution
@@ -196,28 +230,28 @@ export interface UsageOverviewResponse {
   usage: UsageOverviewUsageSnapshot
   summary?: UsageOverviewSummary
   series?: UsageOverviewSeries
-  service_health?: UsageOverviewServiceHealth
   timezone?: string
-  range_start?: string
-  range_end?: string
 }
 
 export interface UsageEventTokens {
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cached_tokens: number
-  cache_read_tokens: number
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
   cache_creation_tokens: number
   total_tokens: number
 }
 
 export interface UsageEvent {
   id?: string
+  request_id?: string
   timestamp: string
   api_key?: string
   model: string
+  model_alias?: string
   reasoning_effort?: string
+  service_tier?: string
+  response_service_tier?: string
   executor_type?: string
   endpoint?: string
   source: string
@@ -226,10 +260,12 @@ export interface UsageEvent {
   auth_index?: string
   isDelete?: boolean
   failed: boolean
-  status_code: number
   latency_ms: number
   ttft_ms?: number
   speed_tps?: number
+  client_ip?: string | null
+  x_forwarded_for?: string | null
+  user_agent?: string | null
   tokens: UsageEventTokens
   cost_usd?: number
   cost_available?: boolean
@@ -248,6 +284,24 @@ export interface UsageEventsResponse {
   page: number
   page_size: number
   total_pages: number
+  next_cursor?: string
+  has_more?: boolean
+}
+
+export interface UsageEventRequestLogSection {
+  title: string
+  content: string
+}
+
+export interface UsageEventRequestLogResponse {
+  event_id: string
+  request_id?: string
+  filename?: string
+  available: boolean
+  previewable?: boolean
+  too_large?: boolean
+  downloadable?: boolean
+  sections: UsageEventRequestLogSection[]
 }
 
 export interface UsageEventModelFilterOptionsResponse {
@@ -260,9 +314,36 @@ export interface UsageEventSourceFilterOptionsResponse {
 
 export type UsageIdentityAuthType = 1 | 2
 
+export interface UsageCredentialHealthBucket {
+  start_time: string
+  end_time: string
+  success: number
+  failure: number
+  rate: number
+}
+
+export interface UsageCredentialHealth {
+  window_seconds: number
+  bucket_seconds: number
+  window_start: string
+  window_end: string
+  total_success: number
+  total_failure: number
+  success_rate: number
+  buckets: UsageCredentialHealthBucket[]
+}
+
+export interface UsageSubscriptionInfo {
+  provider: string
+  plan: string
+  tierId?: string
+  tierName?: string
+}
+
 export interface UsageIdentity {
   id: string
   name: string
+  alias?: string | null
   displayName?: string
   auth_type: UsageIdentityAuthType
   auth_type_name: string
@@ -275,21 +356,22 @@ export interface UsageIdentity {
   priority?: number
   disabled: boolean
   note?: string
-  plan_type?: string
+  subscription?: UsageSubscriptionInfo
   active_start?: string
   active_until?: string
   total_requests: number
   success_count: number
   failure_count: number
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cached_tokens: number
-  total_tokens: number
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
+	total_tokens: number
   last_aggregated_usage_event_id: string
   first_used_at?: string
   last_used_at?: string
   stats_updated_at?: string
+  credential_health?: UsageCredentialHealth
   is_deleted: boolean
   created_at: string
   updated_at: string
@@ -325,7 +407,9 @@ export interface UsageQuotaRow {
   label?: string
   scope?: string
   metric?: string
-  planType?: string
+  groupKey?: string
+  groupLabel?: string
+  groupDescription?: string
   used?: number
   limit?: number
   remaining?: number
@@ -343,6 +427,27 @@ export interface UsageQuotaRow {
 export interface UsageQuotaCheckResponse {
   id: string
   quota: UsageQuotaRow[]
+  subscription?: UsageSubscriptionInfo
+  rateLimitResetCreditsAvailableCount?: number | null
+}
+
+export interface UsageQuotaResetResponse {
+  authIndex: string
+  code?: string
+  windowsReset?: number
+}
+
+export interface UsageQuotaResetCredit {
+  id: string
+  status: string
+  grantedAt?: string
+  expiresAt: string
+}
+
+export interface UsageQuotaResetCreditsResponse {
+  authIndex: string
+  availableCount: number | null
+  credits: UsageQuotaResetCredit[]
 }
 
 export interface UsageQuotaCacheItem {
@@ -423,15 +528,27 @@ export interface UsageQuotaRefreshResponse {
 }
 
 export interface AnalysisTokenUsageBucket {
-  bucket: string
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	bucket: string
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   total_tokens: number
   requests: number
   cost_usd: number
   cost_available: boolean
+}
+
+export interface AnalysisModelUsageSeries {
+  model: string
+  total_tokens: number[]
+  requests: number[]
+}
+
+export interface AnalysisModelUsagePayload {
+  buckets: string[]
+  series: AnalysisModelUsageSeries[]
 }
 
 export interface AnalysisCompositionItem {
@@ -440,10 +557,11 @@ export interface AnalysisCompositionItem {
   total_tokens: number
   requests: number
   percent: number
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   cost_usd: number
   cost_available: boolean
 }
@@ -451,10 +569,11 @@ export interface AnalysisCompositionItem {
 export interface AnalysisHeatmapCell {
   api_key: string
   model: string
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   total_tokens: number
   requests: number
   cost_usd: number
@@ -470,26 +589,28 @@ export interface AnalysisHeatmapPayload {
 }
 
 export interface AnalysisCostBreakdown {
-  input_cost_usd: number
-  output_cost_usd: number
-  cached_cost_usd: number
-  total_cost_usd: number
+	uncached_input_cost_usd: number
+	cache_read_cost_usd: number
+	cache_write_cost_usd: number
+	output_cost_usd: number
+	total_cost_usd: number
   cost_available: boolean
 }
 
 export interface AnalysisModelEfficiencyItem {
   model: string
   requests: number
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   total_tokens: number
   cost_usd: number
   cost_available: boolean
   cost_per_request_usd: number
   output_tokens_per_request: number
-  cache_rate: number
+	cache_read_rate: number
 }
 
 export interface AnalysisLatencyPoint {
@@ -507,6 +628,8 @@ export interface AnalysisLatencyDensityCell {
 }
 
 export interface AnalysisLatencyDiagnostics {
+  supported?: boolean
+  unsupported_reason?: 'range_outside_recent_30_days'
   points: AnalysisLatencyPoint[]
   density: AnalysisLatencyDensityCell[]
   total_points: number
@@ -523,6 +646,7 @@ export interface AnalysisResponse {
   range_start?: string
   range_end?: string
   token_usage: AnalysisTokenUsageBucket[]
+  model_usage?: AnalysisModelUsagePayload
   api_key_composition: AnalysisCompositionItem[]
   model_composition: AnalysisCompositionItem[]
   auth_files_composition: AnalysisCompositionItem[]
@@ -530,7 +654,6 @@ export interface AnalysisResponse {
   heatmap: AnalysisHeatmapPayload
   cost_breakdown: AnalysisCostBreakdown
   model_efficiency: AnalysisModelEfficiencyItem[]
-  latency_diagnostics: AnalysisLatencyDiagnostics
 }
 
 export interface CpaApiKeyDisplayItem {
@@ -565,11 +688,12 @@ export interface CpaApiKeyOptionsResponse {
 export type PricingStyle = 'openai' | 'claude'
 
 export interface ModelPrice {
-  style: PricingStyle
-  prompt: number
-  completion: number
-  cache: number
-  cacheCreation: number
+	style: PricingStyle
+	prompt: number
+	completion: number
+	cacheRead: number
+	cacheWrite: number
+	multiplier: number
 }
 
 export interface PricingSaveFailure {
@@ -585,11 +709,12 @@ export interface PricingSaveResult {
 
 export interface PricingEntry {
   model: string
-  pricing_style: PricingStyle
-  prompt_price_per_1m: number
-  completion_price_per_1m: number
-  cache_price_per_1m: number
-  cache_creation_price_per_1m: number
+	pricing_style: PricingStyle
+	prompt_price_per_1m: number
+	completion_price_per_1m: number
+	cache_read_price_per_1m: number
+	cache_write_price_per_1m: number
+	price_multiplier: number
 }
 
 export interface UsedModelsResponse {
@@ -600,17 +725,39 @@ export interface PricingResponse {
   pricing: PricingEntry[]
 }
 
+export interface PricingRule {
+  key: string
+  value: string
+  multiplier: number
+}
+
+export interface ReplacePricingRuleInput {
+  key: string
+  value: string
+  multiplier?: number
+}
+
+export interface PricingRulesResponse {
+  model: string
+  rules: PricingRule[]
+}
+
+export interface ReplacePricingRulesRequest {
+  model: string
+  rules: ReplacePricingRuleInput[]
+}
+
 export interface PricingSyncMatch {
   model: string
   matched_model: string
   match_type: string
   source_provider_id: string
   source_provider_name: string
-  pricing_style: PricingStyle
-  prompt_price_per_1m: number
-  completion_price_per_1m: number
-  cache_price_per_1m: number
-  cache_creation_price_per_1m: number
+	pricing_style: PricingStyle
+	prompt_price_per_1m: number
+	completion_price_per_1m: number
+	cache_read_price_per_1m: number
+	cache_write_price_per_1m: number
 }
 
 export interface PricingSyncPreviewResponse {
@@ -621,9 +768,32 @@ export interface PricingSyncPreviewResponse {
   unmatched_models: string[]
 }
 
-export type KeyOverviewTimeRange = '4h' | '8h' | '12h' | '24h' | 'today' | 'yesterday' | '7d' | '30d'
+export type UsageRollingHourTimeRange = `${number}h`
+
+export type UsageRollingDayTimeRange = `${number}d`
+
+export type KeyOverviewTimeRange = UsageRollingHourTimeRange | UsageRollingDayTimeRange | 'today' | 'yesterday'
 
 export type UsageTimeRange = KeyOverviewTimeRange | 'custom'
+
+export type UsageCustomRangeUnit = 'hour' | 'day'
+
+export interface UsageCustomRange {
+	unit: UsageCustomRangeUnit
+	start: string
+	end: string
+}
+
+export interface UsageRangeRequest {
+	range: UsageTimeRange
+	unit?: UsageCustomRangeUnit
+	start?: string
+	end?: string
+}
+
+export type UsageActivityRequest = UsageRangeRequest | {
+	window: UsageActivityWindow | 'today' | 'yesterday'
+}
 
 export interface UsageFilterWindow {
   startMs?: number
@@ -631,334 +801,313 @@ export interface UsageFilterWindow {
   windowMinutes?: number
 }
 
-export interface RouteConfig {
-  id: number
-  model: string
-  enabled: boolean
-  strategy: string
-  base_url: string
-  api_key?: string
-  weight: number
-  description?: string
+export type AlertPlatform = 'feishu' | 'dingtalk' | 'wecom';
+export type AlertMetricType = 'usage_threshold' | 'quota_exhausted' | 'error_rate';
+export type AlertConditionOperator = 'gt' | 'gte' | 'lt' | 'lte';
+export type AlertEventStatus = 'pending' | 'sent' | 'failed';
+
+export interface AlertChannel {
+  id: number;
+  name: string;
+  platform: AlertPlatform;
+  webhook_url: string;
+  secret?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface RouteConfigResponse {
-  routes: RouteConfig[]
+export interface AlertChannelCreateRequest {
+  name: string;
+  platform: AlertPlatform;
+  webhook_url: string;
+  secret?: string;
+  enabled?: boolean;
 }
 
-export interface RouteConfigInput {
-  model: string
-  enabled?: boolean
-  strategy?: string
-  base_url: string
-  api_key?: string
-  weight?: number
-  description?: string
+export interface AlertChannelUpdateRequest {
+  name?: string;
+  platform?: AlertPlatform;
+  webhook_url?: string;
+  secret?: string;
+  enabled?: boolean;
 }
+
+export interface AlertRule {
+  id: number;
+  name: string;
+  metric_type: AlertMetricType;
+  condition_op: AlertConditionOperator;
+  condition_val: number;
+  channel_id: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRuleCreateRequest {
+  name: string;
+  metric_type: AlertMetricType;
+  condition_op: AlertConditionOperator;
+  condition_val: number;
+  channel_id: number;
+  enabled?: boolean;
+}
+
+export interface AlertRuleUpdateRequest {
+  name?: string;
+  metric_type?: AlertMetricType;
+  condition_op?: AlertConditionOperator;
+  condition_val?: number;
+  channel_id?: number;
+  enabled?: boolean;
+}
+
+export interface AlertEvent {
+  id: number;
+  rule_id: number;
+  channel_id: number;
+  status: AlertEventStatus;
+  message: string;
+  attempt_count: number;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertEventRetryResponse {
+  event: AlertEvent;
+  retry_error?: string;
+}
+
+export interface BudgetConfig {
+  period: string;
+  amount: number;
+  currency: string;
+  alert_threshold: number;
+  alert_enabled: boolean;
+  alert_fired: boolean;
+  period_start: string;
+  period_end: string;
+  updated_at: string;
+}
+
+export interface BudgetUsage {
+  period: string;
+  amount: number;
+  currency: string;
+  spent: number;
+  remaining: number;
+  usage_percent: number;
+  alert_threshold: number;
+  alert_enabled: boolean;
+  alert_fired: boolean;
+  exceeded: boolean;
+  period_start: string;
+  period_end: string;
+  cost_available: boolean;
+}
+
+export interface BudgetReportItem {
+  model: string;
+  requests: number;
+  total_tokens: number;
+  cost: number;
+  cost_share: number;
+}
+
+export interface BudgetReport {
+  period: string;
+  amount: number;
+  currency: string;
+  spent: number;
+  usage_percent: number;
+  period_start: string;
+  period_end: string;
+  items: BudgetReportItem[];
+}
+
+export interface BudgetUpdateRequest {
+  period: string;
+  amount: number;
+  alert_threshold: number;
+  alert_enabled: boolean;
+}
+
+export type FilterScenario = 'general' | 'finance' | 'medical' | 'custom'
 
 export type FilterAction = 'mask' | 'redact' | 'block'
-export type FilterScenario = 'general' | 'finance' | 'medical' | 'custom'
 
 export interface ContentFilterRule {
   id: number
   name: string
   description?: string
-  enabled: boolean
   scenario: FilterScenario
   action: FilterAction
-  sensitive_words: string[]
-  pii_types: string[]
-  white_list: string[]
-  models: string[]
+  enabled: boolean
+  pii_types?: string[]
+  sensitive_words?: string[]
+  white_list?: string[]
+  models?: string[]
   priority: number
   created_at: string
   updated_at: string
-}
-
-export interface ContentFilterRuleListResponse {
-  rules: ContentFilterRule[]
 }
 
 export interface ContentFilterRuleCreateRequest {
   name: string
   description?: string
+  scenario: FilterScenario
+  action: FilterAction
   enabled?: boolean
-  scenario?: FilterScenario
-  action?: FilterAction
-  sensitive_words?: string[]
   pii_types?: string[]
+  sensitive_words?: string[]
   white_list?: string[]
   models?: string[]
   priority?: number
 }
 
-export interface ContentFilterRuleUpdateRequest {
-  name?: string
-  description?: string
-  enabled?: boolean
-  scenario?: FilterScenario
-  action?: FilterAction
-  sensitive_words?: string[]
-  pii_types?: string[]
-  white_list?: string[]
-  models?: string[]
-  priority?: number
+export type ContentFilterRuleUpdateRequest = Partial<ContentFilterRuleCreateRequest>
+
+export interface ContentFilterRuleListResponse {
+  rules: ContentFilterRule[]
 }
 
 export interface ContentFilterLog {
   id: number
-  rule_id: number
-  rule_name: string
+  created_at: string
+  rule_id?: number
+  rule_name?: string
+  model?: string
   filter_type: string
+  action: FilterAction
   match_count: number
-  matches: string
-  action: string
-  model: string
-  client_ip: string
-  user_id?: string
   raw_preview?: string
   filtered_preview?: string
-  created_at: string
 }
 
-export interface ContentFilterLogListResponse {
+export interface ContentFilterLogsQuery {
+  filter_type?: string
+  action?: string
+  limit?: number
+}
+
+export interface ContentFilterLogsResponse {
   logs: ContentFilterLog[]
   total: number
 }
 
-export interface FilterMatchedDetail {
-  type: string
-  category: string
-  value: string
-  count: number
-}
-
-export interface FilterTextRequest {
+export interface ContentFilterTestRequest {
   text: string
   model?: string
-  client_ip?: string
-  user_id?: string
 }
 
 export interface FilterTextResult {
-  filtered_text: string
-  original_text: string
-  changed: boolean
-  blocked: boolean
-  block_reason?: string
-  action: string
   match_count: number
+  blocked: boolean
+  changed: boolean
+  block_reason?: string
+  action?: FilterAction
+  original_text?: string
   matched_words: string[]
   matched_pii: string[]
-  details: FilterMatchedDetail[]
-  matched_rules: string[]
+  matched_rules?: string[]
+  filtered_text: string
 }
 
+export type UserRole = 'admin' | 'operator' | 'viewer';
 
-
-export type AlertPlatform = 'feishu' | 'dingtalk' | 'wecom'
-
-export type AlertMetricType = 'usage_threshold' | 'quota_exhausted' | 'error_rate'
-
-export type AlertConditionOperator = 'gt' | 'gte' | 'lt' | 'lte'
-
-export type AlertEventStatus = 'pending' | 'sent' | 'failed'
-
-export interface AlertChannel {
-  id: number
-  name: string
-  platform: AlertPlatform
-  webhook_url: string
-  secret?: string
-  enabled: boolean
-  created_at: string
-  updated_at: string
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  role: UserRole;
+  api_key?: string;
+  quota: number;
+  used: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface AlertChannelCreateRequest {
-  name: string
-  platform: AlertPlatform
-  webhook_url: string
-  secret?: string
-  enabled?: boolean
+export interface UserCreateRequest {
+  username: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  quota?: number;
 }
 
-export interface AlertChannelUpdateRequest {
-  name?: string
-  platform?: AlertPlatform
-  webhook_url?: string
-  secret?: string
-  enabled?: boolean
+export interface UserUpdateRequest {
+  email?: string;
+  password?: string;
+  role?: UserRole;
+  quota?: number;
+  active?: boolean;
 }
 
-export interface AlertRule {
-  id: number
-  name: string
-  metric_type: AlertMetricType
-  condition_op: AlertConditionOperator
-  condition_val: number
-  channel_id: number
-  enabled: boolean
-  created_at: string
-  updated_at: string
-}
+// ── Cost Allocation Types ──
 
-export interface AlertRuleCreateRequest {
-  name: string
-  metric_type: AlertMetricType
-  condition_op: AlertConditionOperator
-  condition_val: number
-  channel_id: number
-  enabled?: boolean
-}
+export type CostAllocationDimension = 'department' | 'team' | 'project';
 
-export interface AlertRuleUpdateRequest {
-  name?: string
-  metric_type?: AlertMetricType
-  condition_op?: AlertConditionOperator
-  condition_val?: number
-  channel_id?: number
-  enabled?: boolean
-}
-
-export interface AlertEvent {
-  id: number
-  rule_id: number
-  channel_id: number
-  status: AlertEventStatus
-  message: string
-  attempt_count: number
-  last_error?: string
-  created_at: string
-  updated_at: string
-}
-
-export interface BudgetConfig {
-  period: string
-  amount: number
-  currency: string
-  alert_threshold: number
-  alert_enabled: boolean
-  alert_fired: boolean
-  period_start: string
-  period_end: string
-  updated_at: string
-}
-
-export interface BudgetUsage {
-  period: string
-  amount: number
-  currency: string
-  spent: number
-  remaining: number
-  usage_percent: number
-  alert_threshold: number
-  alert_enabled: boolean
-  alert_fired: boolean
-  exceeded: boolean
-  period_start: string
-  period_end: string
-  cost_available: boolean
-}
-
-export interface BudgetReportItem {
-  model: string
-  requests: number
-  total_tokens: number
-  cost: number
-  cost_share: number
-}
-
-export interface BudgetReport {
-  period: string
-  amount: number
-  currency: string
-  spent: number
-  usage_percent: number
-  period_start: string
-  period_end: string
-  items: BudgetReportItem[]
-}
-
-export interface BudgetUpdateRequest {
-  period: string
-  amount: number
-  alert_threshold?: number
-  alert_enabled?: boolean
-}
-
-export type CostAllocationDimension = 'department' | 'team' | 'project'
-export type CostAllocationMatchType = 'api_key' | 'label'
+export type CostAllocationMatchType = 'api_key' | 'label';
 
 export interface CostAllocationRule {
-  id: number
-  name: string
-  dimension: CostAllocationDimension
-  match_type: CostAllocationMatchType
-  match_values: string[]
-  enabled: boolean
-  priority: number
-  note: string
-  created_at: string
-  updated_at: string
+  id: string;
+  name: string;
+  dimension: CostAllocationDimension;
+  match_type: CostAllocationMatchType;
+  match_values: string[];
+  enabled: boolean;
+  priority: number;
+  note?: string;
 }
 
 export interface CostAllocationRuleCreateRequest {
-  name: string
-  dimension: CostAllocationDimension
-  match_type: CostAllocationMatchType
-  match_values: string[]
-  enabled?: boolean
-  priority?: number
-  note?: string
+  name: string;
+  dimension: CostAllocationDimension;
+  match_type: CostAllocationMatchType;
+  match_values: string[];
+  enabled: boolean;
+  priority: number;
+  note?: string;
 }
 
 export interface CostAllocationRuleUpdateRequest {
-  name?: string
-  dimension?: CostAllocationDimension
-  match_type?: CostAllocationMatchType
-  match_values?: string[]
-  enabled?: boolean
-  priority?: number
-  note?: string
-}
-
-export interface DepartmentCostView {
-  dimension: CostAllocationDimension
-  name: string
-  requests: number
-  total_tokens: number
-  cost: number
-  cost_share: number
-  rule_count: number
-}
-
-export interface DepartmentsResponse {
-  period: string
-  start: string
-  end: string
-  departments: DepartmentCostView[]
-  total_cost: number
-  cost_available: boolean
-  unassigned_cost: number
-  unassigned_requests: number
+  name?: string;
+  dimension?: CostAllocationDimension;
+  match_type?: CostAllocationMatchType;
+  match_values?: string[];
+  enabled?: boolean;
+  priority?: number;
+  note?: string;
 }
 
 export interface CostAllocationReportItem {
-  dimension: CostAllocationDimension
-  name: string
-  model: string
-  requests: number
-  total_tokens: number
-  cost: number
-  cost_share: number
+  name: string;
+  model: string;
+  requests: number;
+  total_tokens: number;
+  cost: number;
+  cost_share: number;
 }
 
 export interface CostAllocationReport {
-  from: string
-  to: string
-  dimension: string
-  items: CostAllocationReportItem[]
-  total_cost: number
-  cost_available: boolean
+  items: CostAllocationReportItem[];
+}
+
+export interface DepartmentCostView {
+  name: string;
+  cost: number;
+  requests: number;
+  total_tokens: number;
+  cost_share: number;
+}
+
+export interface DepartmentsResponse {
+  departments: DepartmentCostView[];
+  total_cost: number;
+  unassigned_cost: number;
+  unassigned_requests: number;
+  cost_available: boolean;
 }

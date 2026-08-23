@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.26-alpine AS builder
+WORKDIR /app
+RUN apk add --no-cache build-base
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+ARG VERSION=dev
+RUN CGO_ENABLED=1 GOOS=linux go build \
+    -ldflags="-s -w -X cpa-usage-keeper/internal/version.Version=${VERSION}" \
+    -o /out/license-server ./cmd/licenseserver/main.go
+
+FROM alpine:3.20
+WORKDIR /
+RUN apk add --no-cache ca-certificates tzdata su-exec \
+    && addgroup -S app \
+    && adduser -S -G app app
+COPY --from=builder /out/license-server /app/license-server
+COPY deploy/license_keys.json /app/license_keys.json
+VOLUME ["/app/data"]
+EXPOSE 8443
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -q --spider "http://127.0.0.1:8443/health" || exit 1
+USER app
+CMD ["/app/license-server", "--port", "8443", "--keys", "/app/license_keys.json", "--state", "/app/data/license_state.json"]

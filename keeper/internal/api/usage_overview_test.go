@@ -32,6 +32,10 @@ func (s *usageFilterStub) GetUsageOverview(_ context.Context, filter servicedto.
 	return s.overview, s.err
 }
 
+func (s *usageFilterStub) GetUsageActivity(context.Context, servicedto.UsageFilter) (*servicedto.UsageActivitySnapshot, error) {
+	return nil, s.err
+}
+
 func (s *usageFilterStub) GetUsageOverviewRealtime(_ context.Context, filter servicedto.UsageFilter) (*servicedto.UsageOverviewRealtime, error) {
 	s.lastRealtime = filter
 	s.realtimeCalls++
@@ -42,11 +46,19 @@ func (s *usageFilterStub) ListUsageEvents(context.Context, servicedto.UsageFilte
 	return nil, s.err
 }
 
+func (s *usageFilterStub) StreamUsageEvents(context.Context, servicedto.UsageFilter, func(servicedto.UsageEventRecord) error) error {
+	return s.err
+}
+
 func (s *usageFilterStub) ListUsageEventFilterOptions(context.Context, servicedto.UsageFilter) (*servicedto.UsageEventFilterOptions, error) {
 	return nil, s.err
 }
 
 func (s *usageFilterStub) GetAnalysis(context.Context, servicedto.UsageFilter) (*servicedto.AnalysisSnapshot, error) {
+	return nil, s.err
+}
+
+func (s *usageFilterStub) GetAnalysisLatency(context.Context, servicedto.UsageFilter) (*servicedto.AnalysisLatencyDiagnostics, error) {
 	return nil, s.err
 }
 
@@ -59,7 +71,7 @@ func mustParseTime(t *testing.T, value string) time.Time {
 	return parsed
 }
 
-func TestKeyOverviewForcesViewerAPIKeyIDAndReturnsOverview(t *testing.T) {
+func TestKeyOverviewIgnoresClientAPIKeyIDAndReturnsViewerOverview(t *testing.T) {
 	sessions := auth.NewSessionManager(time.Hour)
 	token, _, err := sessions.CreateAPIKeyViewer(42)
 	if err != nil {
@@ -71,7 +83,7 @@ func TestKeyOverviewForcesViewerAPIKeyIDAndReturnsOverview(t *testing.T) {
 	router := NewRouter(nil, nil, provider, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{CPAAPIKeys: keyProvider})
 
 	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview?range=24h&api_key_id=999", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview?range=24h&api_key_id=not-a-number", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	router.ServeHTTP(resp, req)
 
@@ -86,7 +98,7 @@ func TestKeyOverviewForcesViewerAPIKeyIDAndReturnsOverview(t *testing.T) {
 	}
 }
 
-func TestKeyOverviewRealtimeForcesViewerAPIKeyIDAndAllowsParallelOverviewRequest(t *testing.T) {
+func TestKeyOverviewRealtimeIgnoresClientAPIKeyIDAndAllowsParallelOverviewRequest(t *testing.T) {
 	sessions := auth.NewSessionManager(time.Hour)
 	token, _, err := sessions.CreateAPIKeyViewer(42)
 	if err != nil {
@@ -117,7 +129,7 @@ func TestKeyOverviewRealtimeForcesViewerAPIKeyIDAndAllowsParallelOverviewRequest
 	}
 
 	realtimeResp := httptest.NewRecorder()
-	realtimeReq := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview/realtime?window=60m&api_key_id=999", nil)
+	realtimeReq := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview/realtime?window=60m&api_key_id=not-a-number", nil)
 	realtimeReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	router.ServeHTTP(realtimeResp, realtimeReq)
 
@@ -147,7 +159,7 @@ func TestKeyOverviewRealtimeForcesViewerAPIKeyIDAndAllowsParallelOverviewRequest
 	}
 }
 
-func TestKeyOverviewRejectsCustomAndUnsupportedRanges(t *testing.T) {
+func TestKeyOverviewRejectsUnsupportedRanges(t *testing.T) {
 	sessions := auth.NewSessionManager(time.Hour)
 	token, _, err := sessions.CreateAPIKeyViewer(42)
 	if err != nil {
@@ -158,7 +170,7 @@ func TestKeyOverviewRejectsCustomAndUnsupportedRanges(t *testing.T) {
 	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
 	router := NewRouter(nil, nil, provider, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{CPAAPIKeys: keyProvider})
 
-	for _, path := range []string{"/api/v1/key-overview?range=custom&start=2026-04-20&end=2026-04-21", "/api/v1/key-overview?range=90d", "/api/v1/key-overview?start=2026-04-20"} {
+	for _, path := range []string{"/api/v1/key-overview?range=90d", "/api/v1/key-overview?start=2026-04-20"} {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
@@ -169,6 +181,30 @@ func TestKeyOverviewRejectsCustomAndUnsupportedRanges(t *testing.T) {
 	}
 	if provider.overviewCalls != 0 {
 		t.Fatalf("expected invalid ranges not to call usage provider, got %d", provider.overviewCalls)
+	}
+}
+
+func TestKeyOverviewReturnsConflictForExpiredCustomRange(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	token, _, err := sessions.CreateAPIKeyViewer(42)
+	if err != nil {
+		t.Fatalf("CreateAPIKeyViewer returned error: %v", err)
+	}
+	provider := &usageFilterStub{overview: &servicedto.UsageOverviewSnapshot{}}
+	keyProvider := &authCPAAPIKeyStub{row: entities.CPAAPIKey{ID: 42, DisplayKey: "sk-*********live"}}
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
+	router := NewRouter(nil, nil, provider, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{CPAAPIKeys: keyProvider})
+
+	resp := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/key-overview?range=custom&unit=day&start=2000-01-01&end=2000-01-02", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected expired Custom range to return 409, got %d %s", resp.Code, resp.Body.String())
+	}
+	if provider.overviewCalls != 0 {
+		t.Fatalf("expected expired range not to call usage provider, got %d", provider.overviewCalls)
 	}
 }
 
@@ -230,7 +266,7 @@ func TestKeyOverviewClearsInactiveViewerSession(t *testing.T) {
 	}
 }
 
-func TestUsageOverviewResponseIncludesResolvedRangeAndTimezone(t *testing.T) {
+func TestUsageOverviewResponseKeepsResolvedFilterAndTimezone(t *testing.T) {
 	previousLocal := time.Local
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -241,7 +277,12 @@ func TestUsageOverviewResponseIncludesResolvedRangeAndTimezone(t *testing.T) {
 
 	provider := &usageFilterStub{overview: &servicedto.UsageOverviewSnapshot{}}
 	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/overview?range=custom&start=2026-04-20&end=2026-04-21", nil)
+	now := time.Now().In(location)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
+	startDay := today.AddDate(0, 0, -6)
+	startDate := startDay.Format(time.DateOnly)
+	endDate := today.Format(time.DateOnly)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/overview?range=custom&unit=day&start="+startDate+"&end="+endDate, nil)
 	resp := httptest.NewRecorder()
 
 	router.ServeHTTP(resp, req)
@@ -249,11 +290,13 @@ func TestUsageOverviewResponseIncludesResolvedRangeAndTimezone(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.Code)
 	}
-	expectedStart := time.Date(2026, 4, 20, 0, 0, 0, 0, location).Format(time.RFC3339Nano)
-	expectedEnd := time.Date(2026, 4, 22, 0, 0, 0, 0, location).Add(-time.Nanosecond).Format(time.RFC3339Nano)
 	body := resp.Body.String()
-	if !contains(body, `"timezone":"Asia/Shanghai"`) || !contains(body, `"range_start":"`+expectedStart+`"`) || !contains(body, `"range_end":"`+expectedEnd+`"`) {
-		t.Fatalf("expected overview response to include resolved range and timezone, got %s", body)
+	if !contains(body, `"timezone":"Asia/Shanghai"`) || contains(body, `"range_start":`) || contains(body, `"range_end":`) {
+		t.Fatalf("expected overview response to retain timezone without redundant range fields, got %s", body)
+	}
+	if provider.lastFilter.StartTime == nil || !provider.lastFilter.StartTime.Equal(startDay) ||
+		provider.lastFilter.EndTime == nil || !provider.lastFilter.EndTime.Equal(today.AddDate(0, 0, 1)) {
+		t.Fatalf("expected resolved range to remain in the service filter, got %+v", provider.lastFilter)
 	}
 }
 
@@ -302,6 +345,8 @@ func TestUsageOverviewRealtimeAcceptsWindowAndReturnsRealtimeBlock(t *testing.T)
 	provider := &usageFilterStub{realtime: &servicedto.UsageOverviewRealtime{
 		Window:        "30m",
 		BucketSeconds: 60,
+		WindowStart:   time.Date(2026, 4, 22, 11, 0, 0, 0, location),
+		WindowEnd:     time.Date(2026, 4, 22, 11, 30, 0, 0, location),
 		TokenVelocity: []servicedto.RealtimeTokenVelocityPoint{{
 			Bucket:          "2026-04-22T11:00:00Z",
 			TokensPerMinute: 120,
@@ -313,6 +358,21 @@ func TestUsageOverviewRealtimeAcceptsWindowAndReturnsRealtimeBlock(t *testing.T)
 			TTFTP95MS:    int64Ptr(210),
 			LatencyP95MS: int64Ptr(820),
 		}},
+		ResponseDistribution: servicedto.RealtimeResponseDistribution{
+			TTFT: servicedto.RealtimeResponseDistributionSeries{
+				Particles: []servicedto.RealtimeResponseParticle{{
+					Bucket:    "2026-04-22T11:00:00Z",
+					Timestamp: "2026-04-22T11:00:15Z",
+					MS:        120,
+					Count:     1,
+				}},
+				TotalParticles: 1,
+				MaxParticles:   1000,
+			},
+			Latency: servicedto.RealtimeResponseDistributionSeries{
+				MaxParticles: 1000,
+			},
+		},
 		CurrentUsage: servicedto.RealtimeCurrentUsage{
 			Models: []servicedto.RealtimeUsageTopItem{{
 				Key:      "gpt-5",
@@ -336,10 +396,11 @@ func TestUsageOverviewRealtimeAcceptsWindowAndReturnsRealtimeBlock(t *testing.T)
 			Requests:          1,
 		}},
 		CacheLevel: []servicedto.RealtimeCacheLevelPoint{{
-			Bucket:       "2026-04-22T11:00:00Z",
-			CacheRate:    float64Ptr(25),
-			CachedTokens: 5,
-			InputTokens:  20,
+			Bucket:              "2026-04-22T11:00:00Z",
+			CacheReadRate:       float64Ptr(25),
+			CacheReadTokens:     5,
+			CacheCreationTokens: 2,
+			InputTokens:         20,
 		}},
 	}}
 	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
@@ -356,13 +417,13 @@ func TestUsageOverviewRealtimeAcceptsWindowAndReturnsRealtimeBlock(t *testing.T)
 		t.Fatalf("expected realtime window and anchor to be passed through, got %+v", provider.lastRealtime)
 	}
 	for _, expected := range []string{
-		`"window":"30m","timezone":"Asia/Shanghai","bucket_seconds":60`,
+		`"window":"30m","timezone":"Asia/Shanghai","bucket_seconds":60,"window_start":"2026-04-22T11:00:00+08:00","window_end":"2026-04-22T11:30:00+08:00"`,
 		`"token_velocity":[{"bucket":"2026-04-22T11:00:00Z","tokens_per_minute":120,"tokens":20,"cost":0.123}]`,
 		`"response_level":[{"bucket":"2026-04-22T11:00:00Z","ttft_p95_ms":210,"latency_p95_ms":820}]`,
-		`"response_distribution":{"ttft":{"average_line":[],"particles":[]},"latency":{"average_line":[],"particles":[]}}`,
+		`"response_distribution":{"ttft":{"average_line":[],"particles":[{"bucket":"2026-04-22T11:00:00Z","timestamp":"2026-04-22T11:00:15Z","ms":120,"count":1}],"total_particles":1,"sampled":false,"max_particles":1000},"latency":{"average_line":[],"particles":[],"total_particles":0,"sampled":false,"max_particles":1000}}`,
 		`"current_usage":{"models":[{"key":"gpt-5","label":"gpt-5","tokens":20,"requests":1,"cost":0.123,"share":100}],"api_keys":[{"key":"sk-*********123456","label":"sk-*********123456","tokens":20,"requests":1,"share":100}]`,
 		`"request_level":[{"bucket":"2026-04-22T11:00:00Z","requests_per_minute":6,"requests":1}]`,
-		`"cache_level":[{"bucket":"2026-04-22T11:00:00Z","cache_rate":25,"cached_tokens":5,"input_tokens":20}]`,
+		`"cache_level":[{"bucket":"2026-04-22T11:00:00Z","cache_read_rate":25,"cache_read_tokens":5,"cache_creation_tokens":2,"input_tokens":20}]`,
 	} {
 		if !contains(body, expected) {
 			t.Fatalf("expected realtime response to contain %s, got %s", expected, body)
@@ -507,36 +568,23 @@ func TestUsageOverviewReturnsFilteredSnapshot(t *testing.T) {
 			TotalTokens:   20,
 		},
 		Summary: servicedto.UsageOverviewSummary{
-			RequestCount:    1,
-			TokenCount:      20,
-			WindowMinutes:   1440,
-			RPM:             1.0 / 1440.0,
-			TPM:             20.0 / 1440.0,
-			TotalCost:       0.123,
-			CostAvailable:   true,
-			InputTokens:     11,
-			CachedTokens:    2,
-			ReasoningTokens: 3,
+			RPM:                 1.0 / 1440.0,
+			TPM:                 20.0 / 1440.0,
+			TotalCost:           0.123,
+			CostAvailable:       true,
+			InputTokens:         11,
+			CacheReadTokens:     2,
+			CacheCreationTokens: 1,
+			ReasoningTokens:     3,
 		},
 		Series: servicedto.UsageOverviewSeries{
-			Requests:  map[string]int64{"2026-04-22T11:00:00Z": 1},
-			Tokens:    map[string]int64{"2026-04-22T11:00:00Z": 20},
-			RPM:       map[string]float64{"2026-04-22T11:00:00Z": 1.0 / 60.0},
-			TPM:       map[string]float64{"2026-04-22T11:00:00Z": 20.0 / 60.0},
-			Cost:      map[string]float64{"2026-04-22T11:00:00Z": 0.123},
-			CacheRate: map[string]*float64{"2026-04-22T11:00:00Z": float64Ptr(18.18)},
-		},
-		Health: servicedto.UsageOverviewHealth{
-			TotalSuccess: 1,
-			TotalFailure: 0,
-			SuccessRate:  100,
-			BlockDetails: []servicedto.UsageOverviewHealthBlock{{
-				StartTime: mustParseTime(t, "2026-04-22T11:00:00Z"),
-				EndTime:   mustParseTime(t, "2026-04-22T11:15:00Z"),
-				Success:   1,
-				Failure:   0,
-				Rate:      1,
-			}},
+			Buckets:       []string{"2026-04-22T11:00:00Z"},
+			Requests:      []int64{1},
+			Tokens:        []int64{20},
+			RPM:           []float64{1.0 / 60.0},
+			TPM:           []float64{20.0 / 60.0},
+			Cost:          []float64{0.123},
+			CacheReadRate: []*float64{float64Ptr(18.18)},
 		},
 	}}
 	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
@@ -552,7 +600,7 @@ func TestUsageOverviewReturnsFilteredSnapshot(t *testing.T) {
 	if !contains(body, `"usage":`) || !contains(body, `"total_requests":1`) {
 		t.Fatalf("unexpected response body: %s", body)
 	}
-	if !contains(body, `"summary":{"request_count":1,"token_count":20`) {
+	if !contains(body, `"summary":{"rpm":`) {
 		t.Fatalf("expected backend summary in response body: %s", body)
 	}
 	if !contains(body, `"cost_available":true`) {
@@ -561,15 +609,14 @@ func TestUsageOverviewReturnsFilteredSnapshot(t *testing.T) {
 	if !contains(body, `"input_tokens":11`) {
 		t.Fatalf("expected summary input tokens in response body: %s", body)
 	}
-	if !contains(body, `"series":{"requests":{"2026-04-22T11:00:00Z":1}`) {
+	if !contains(body, `"series":{"buckets":["2026-04-22T11:00:00Z"],"requests":[1]`) {
 		t.Fatalf("expected backend series in response body: %s", body)
 	}
-	if !contains(body, `"cache_rate":{"2026-04-22T11:00:00Z":18.18}`) {
+	if !contains(body, `"cache_read_rate":[18.18]`) {
 		t.Fatalf("expected backend cache-rate series in response body: %s", body)
 	}
-	if !contains(body, `"service_health":{"total_success":1,"total_failure":0,"success_rate":100`) ||
-		!contains(body, `"block_details":[{"start_time":"2026-04-22T11:00:00Z","end_time":"2026-04-22T11:15:00Z","success":1,"failure":0,"rate":1}]`) {
-		t.Fatalf("expected service health in response body: %s", body)
+	if contains(body, `"service_health":`) {
+		t.Fatalf("expected overview response to omit Activity health: %s", body)
 	}
 	assertUsageOverviewResponseShape(t, body)
 	if contains(body, `"details":`) {
@@ -589,6 +636,44 @@ func TestUsageOverviewReturnsFilteredSnapshot(t *testing.T) {
 	}
 }
 
+func TestUsageOverviewReturnsDailyAverageSummaryFields(t *testing.T) {
+	provider := &usageFilterStub{overview: &servicedto.UsageOverviewSnapshot{
+		Usage: &dto.StatisticsSnapshot{
+			TotalRequests: 14,
+			SuccessCount:  14,
+			TotalTokens:   7000000,
+		},
+		Summary: servicedto.UsageOverviewSummary{
+			RPM:                   14.0 / 10080.0,
+			TPM:                   7000000.0 / 10080.0,
+			TotalCost:             56.49,
+			CostAvailable:         false,
+			InputTokens:           7000000,
+			DailyAverageRequests:  float64Ptr(2),
+			DailyAverageTokens:    float64Ptr(1000000),
+			DailyAverageCost:      float64Ptr(8.07),
+			DailyAverageRangeDays: float64Ptr(7),
+		},
+	}}
+	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/overview?range=7d", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.Code)
+	}
+	body := resp.Body.String()
+	if !contains(body, `"daily_average_requests":2`) ||
+		!contains(body, `"daily_average_tokens":1000000`) ||
+		!contains(body, `"daily_average_cost":8.07`) ||
+		!contains(body, `"daily_average_range_days":7`) {
+		t.Fatalf("expected daily average summary fields in response body: %s", body)
+	}
+	assertUsageOverviewResponseShape(t, body)
+}
+
 func TestUsageOverviewNilProviderReturnsPrunedShape(t *testing.T) {
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/overview", nil)
@@ -600,11 +685,11 @@ func TestUsageOverviewNilProviderReturnsPrunedShape(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", resp.Code)
 	}
 	body := resp.Body.String()
-	if !contains(body, `"summary":{"request_count":0`) || !contains(body, `"input_tokens":0`) {
+	if !contains(body, `"summary":{"rpm":0`) || !contains(body, `"input_tokens":0`) {
 		t.Fatalf("expected empty overview summary to include input_tokens, got %s", body)
 	}
-	if !contains(body, `"series":{"requests":{}`) || !contains(body, `"cache_rate":{}`) {
-		t.Fatalf("expected empty overview series to include cache_rate, got %s", body)
+	if !contains(body, `"series":{"buckets":[]`) || !contains(body, `"cache_read_rate":[]`) {
+		t.Fatalf("expected empty overview series to include cache_read_rate, got %s", body)
 	}
 	assertUsageOverviewResponseShape(t, body)
 }
@@ -615,7 +700,7 @@ func assertUsageOverviewResponseShape(t *testing.T, body string) {
 	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
 		t.Fatalf("failed to decode overview response: %v\n%s", err, body)
 	}
-	assertAllowedJSONKeys(t, decoded, "overview response", body, "usage", "summary", "series", "service_health", "timezone", "range_start", "range_end")
+	assertAllowedJSONKeys(t, decoded, "overview response", body, "usage", "summary", "series", "timezone")
 
 	usage, ok := decoded["usage"].(map[string]any)
 	if !ok {
@@ -623,11 +708,22 @@ func assertUsageOverviewResponseShape(t *testing.T, body string) {
 	}
 	assertAllowedJSONKeys(t, usage, "overview usage", body, "total_requests", "success_count", "failure_count", "total_tokens")
 
+	summary, ok := decoded["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected summary object in response, got %s", body)
+	}
+	assertAllowedJSONKeys(t, summary, "overview summary", body,
+		"rpm", "tpm", "total_cost", "cost_available",
+		"input_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens",
+		"daily_average_requests", "daily_average_tokens", "daily_average_cost", "daily_average_range_days",
+	)
+
 	series, ok := decoded["series"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected series object in response, got %s", body)
 	}
-	assertAllowedJSONKeys(t, series, "overview series", body, "requests", "tokens", "rpm", "tpm", "cost", "cache_rate")
+	assertAllowedJSONKeys(t, series, "overview series", body, "buckets", "requests", "tokens", "rpm", "tpm", "cost", "cache_read_rate")
+
 }
 
 func assertAllowedJSONKeys(t *testing.T, values map[string]any, label, body string, allowedKeys ...string) {
