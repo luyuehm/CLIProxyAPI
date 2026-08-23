@@ -1,0 +1,244 @@
+.pageShell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+.pageFrame {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.subtitle {
+  color: var(--text-secondary, #666);
+  margin: 4px 0 0;
+  font-size: 0.875rem;
+}
+
+.headerActions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.periodBar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.periodLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #666);
+}
+
+.notice {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.noticeSuccess {
+  background: var(--color-success-bg, #e6f7e6);
+  color: var(--color-success-text, #1a7a1a);
+}
+
+.noticeError {
+  background: var(--color-error-bg, #fde8e8);
+  color: var(--color-error-text, #c41e1e);
+}
+
+.errorBox {
+  color: var(--color-error-text, #c41e1e);
+  font-size: 0.875rem;
+  padding: 8px 12px;
+  background: var(--color-error-bg, #fde8e8);
+  border-radius: 6px;
+}
+
+.loadingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  padding: 48px 0;
+  color: var(--text-secondary, #666);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.card {
+  width: 100%;
+}
+
+.usageSection {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.usageSummary {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+
+.usageStat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usageStatLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--text-secondary, #666);
+  letter-spacing: 0.5px;
+}
+
+.usageStatValue {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.overBudget {
+  color: var(--color-error-text, #c41e1e);
+}
+
+.progressBarContainer {
+  position: relative;
+  height: 28px;
+  background: var(--color-progress-bg, #e8e8e8);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.progressBar {
+  height: 100%;
+  background: var(--color-progress-fill, #4caf50);
+  border-radius: 14px;
+  transition: width 0.4s ease;
+  min-width: 0;
+}
+
+.progressWarning {
+  background: var(--color-progress-warning, #ff9800);
+}
+
+.progressExceeded {
+  background: var(--color-progress-exceeded, #f44336);
+}
+
+.progressLabel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-progress-label, #333);
+}
+
+.alertBanner {
+  padding: 10px 14px;
+  background: var(--color-error-bg, #fde8e8);
+  color: var(--color-error-text, #c41e1e);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #666);
+  font-style: italic;
+}
+
+.tableContainer {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.table th,
+.table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color, #e0e0e0);
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--text-secondary, #666);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.table tbody tr:hover {
+  background: var(--color-row-hover, #f5f5f5);
+}
+
+.numericCol {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.emptyState {
+  text-align: center;
+  padding: 32px 0;
+  color: var(--text-secondary, #666);
+  font-size: 0.875rem;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.formField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.formLabel {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary, #333);
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}

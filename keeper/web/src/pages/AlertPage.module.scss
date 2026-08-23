@@ -1,0 +1,238 @@
+.pageShell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+.pageFrame {
+  background: var(--color-surface, #fff);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #666);
+}
+
+.headerActions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border, #e0e0e0);
+  margin-bottom: 1.5rem;
+}
+
+.tab {
+  padding: 0.625rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--color-text-secondary, #666);
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover {
+  color: var(--color-text-primary, #333);
+}
+
+.tabActive {
+  color: var(--color-primary, #1677ff);
+  border-bottom-color: var(--color-primary, #1677ff);
+}
+
+.notice {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.noticeSuccess {
+  background: #f6ffed;
+  border: 1px solid #b7eb8f;
+  color: #389e0d;
+}
+
+.noticeError {
+  background: #fff2f0;
+  border: 1px solid #ffccc7;
+  color: #cf1322;
+}
+
+.errorBox {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+  background: #fff2f0;
+  border: 1px solid #ffccc7;
+  color: #cf1322;
+}
+
+.loadingRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 3rem 0;
+  color: var(--color-text-secondary, #666);
+  font-size: 0.875rem;
+}
+
+.tableContainer {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.table th {
+  text-align: left;
+  padding: 0.625rem 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #666);
+  border-bottom: 2px solid var(--color-border, #e0e0e0);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--color-border, #f0f0f0);
+  vertical-align: middle;
+}
+
+.emptyCell {
+  text-align: center;
+  padding: 2rem 0.75rem !important;
+  color: var(--color-text-secondary, #999);
+}
+
+.actions {
+  display: flex;
+  gap: 0.375rem;
+  white-space: nowrap;
+}
+
+.platformBadge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.platformFeishu {
+  background: #e6f4ff;
+  color: #1677ff;
+}
+
+.platformDingtalk {
+  background: #e6fffb;
+  color: #00b96b;
+}
+
+.platformWecom {
+  background: #fff7e6;
+  color: #d46b08;
+}
+
+.statusBadge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.statusEnabled {
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.statusDisabled {
+  background: #f5f5f5;
+  color: #999;
+}
+
+.statusPending {
+  background: #fff7e6;
+  color: #d46b08;
+}
+
+.statusSent {
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.statusFailed {
+  background: #fff2f0;
+  color: #cf1322;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.formField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.formLabel {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary, #333);
+}
+
+.eventMessage {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+}
+
+.eventError {
+  color: #cf1322;
+  font-size: 0.8125rem;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.retryBtn {
+  font-size: 0.75rem;
+}
