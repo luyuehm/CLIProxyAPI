@@ -60,6 +60,20 @@ _bmad-output/*
 .DS_Store
 ._*
 
+# Build artifacts / compiled binaries
+CLIProxyAPI
+CLIProxyAPI-aws-ldflags
+CLIProxyAPI-linux-amd64
+
+# Config backups
+config.yaml.bak-*
+
+# Dry-run / working compose files
+docker-compose.dryrun.yml
+
+# Multica parallel workspace
+.multica-parallel/
+
 # docker
 docker-compose.override.yml
 
@@ -67,6 +81,6 @@ docker-compose.override.yml
 # Local LLM Wiki vault
 .llm-wiki
 
-# Enterprise (私有的企业版，独立 git 管理)
-enterprise/
-keeper/
+# Enterprise 企业版部署包（已作为 CPA 仓库子目录管理，与核心引擎版本同步）
+# 根目录 enterprise/ = CPA 独立部署，keeper/enterprise/ = KEEPER 独立部署
+# 注意：不要排除这两个目录，它们与 cpa-usage-keeper 开源版通过 multica 策略独立管理
