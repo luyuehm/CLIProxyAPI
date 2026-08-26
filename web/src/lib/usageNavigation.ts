@@ -5,6 +5,10 @@ export const USAGE_TAB_OPTIONS = [
   'events',
   'auth-files',
   'ai-provider',
+  'alerts',
+  'content-filter',
+  'users',
+  'cost-allocation',
   'settings',
 ] as const;
 
@@ -18,6 +22,10 @@ const USAGE_TAB_PATHS: Record<UsageTab, string> = {
   events: '/request-events',
   'auth-files': '/auth-files',
   'ai-provider': '/ai-provider',
+  alerts: '/alerts',
+  'content-filter': '/content-filter',
+  users: '/users',
+  'cost-allocation': '/cost-allocation',
   settings: '/settings',
 };
 

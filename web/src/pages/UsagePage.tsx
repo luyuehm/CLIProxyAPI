@@ -55,6 +55,10 @@ import { useLocalRankingData } from '@/features/ranking/hooks/useLocalRankingDat
 import { resolveLocalRankingPreviewAPI, resolveRankingPreviewAPI } from '@/features/ranking/previewMock';
 import { loadRankingScope, persistRankingScope } from '@/features/ranking/scope';
 import type { LocalRankingProfileRequest, RankingScope } from '@/features/ranking/types';
+import { AlertPage } from './AlertPage';
+import { ContentFilterPage } from './ContentFilterPage';
+import { UsersPage } from './UsersPage';
+import { CostAllocationPage } from './CostAllocationPage';
 import styles from './UsagePage.module.scss';
 
 const TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-time-range-v1';
@@ -78,6 +82,10 @@ const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
   events: 'usage_stats.tab_events',
   'auth-files': 'usage_stats.tab_auth_files',
   'ai-provider': 'usage_stats.tab_ai_provider',
+  alerts: 'usage_stats.tab_alerts',
+  'content-filter': 'usage_stats.tab_content_filter',
+  users: 'usage_stats.tab_users',
+  'cost-allocation': 'usage_stats.tab_cost_allocation',
   settings: 'usage_stats.tab_settings',
 };
 const USAGE_TAB_STORAGE_KEY = 'cli-proxy-usage-tab-v1';
@@ -135,7 +143,14 @@ export const getCredentialSectionVisibility = (tab: UsageTab) => ({
   showAiProvider: tab === 'ai-provider',
 });
 
-export const shouldShowRangeControls = (tab: UsageTab) => tab !== 'ranking' && tab !== 'settings' && !getCredentialSectionVisibility(tab).enabled;
+export const shouldShowRangeControls = (tab: UsageTab) =>
+  tab !== 'ranking'
+  && tab !== 'settings'
+  && tab !== 'alerts'
+  && tab !== 'content-filter'
+  && tab !== 'users'
+  && tab !== 'cost-allocation'
+  && !getCredentialSectionVisibility(tab).enabled;
 
 export const shouldShowApiKeyFilter = (tab: UsageTab) => shouldShowRangeControls(tab);
 
@@ -2227,6 +2242,22 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   )}
                 </div>
               </>
+            )}
+
+            {activeTab === 'alerts' && (
+              <AlertPage onAuthRequired={onAuthRequired} />
+            )}
+
+            {activeTab === 'content-filter' && (
+              <ContentFilterPage onAuthRequired={onAuthRequired} />
+            )}
+
+            {activeTab === 'users' && (
+              <UsersPage onAuthRequired={onAuthRequired} />
+            )}
+
+            {activeTab === 'cost-allocation' && (
+              <CostAllocationPage onAuthRequired={onAuthRequired} />
             )}
 
             {activeTab === 'settings' && (

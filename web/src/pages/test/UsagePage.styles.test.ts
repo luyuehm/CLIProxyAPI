@@ -829,7 +829,7 @@ describe('UsagePage toolbar styles', () => {
     expect(i18nSource).not.toContain("tab_analysis: 'API & Models'")
     expect(i18nSource).not.toContain("tab_analysis: 'API 与模型'")
     expect(i18nSource).not.toContain("tab_analysis: 'API 與模型'")
-    expect(usageNavigationSource).toMatch(/USAGE_TAB_OPTIONS = \[\s*'overview',\s*'analysis',\s*'ranking',\s*'events',\s*'auth-files',\s*'ai-provider',\s*'settings',\s*\] as const/)
+    expect(usageNavigationSource).toMatch(/USAGE_TAB_OPTIONS = \[\s*'overview',\s*'analysis',\s*'ranking',\s*'events',\s*'auth-files',\s*'ai-provider',\s*'alerts',\s*'content-filter',\s*'users',\s*'cost-allocation',\s*'settings',\s*\] as const/)
   })
 
   it('keeps Sign out as the rightmost shared main action after Check Updates', () => {

@@ -20,6 +20,10 @@ describe('usage page navigation', () => {
       ['events', '/request-events'],
       ['auth-files', '/auth-files'],
       ['ai-provider', '/ai-provider'],
+      ['alerts', '/alerts'],
+      ['content-filter', '/content-filter'],
+      ['users', '/users'],
+      ['cost-allocation', '/cost-allocation'],
       ['settings', '/settings'],
     ] as const;
 

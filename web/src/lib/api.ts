@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AlertChannel, type AlertChannelCreateRequest, type AlertChannelUpdateRequest, type AlertRule, type AlertRuleCreateRequest, type AlertRuleUpdateRequest, type AlertEvent, type AlertEventRetryResponse, type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type ContentFilterRule, type ContentFilterRuleCreateRequest, type ContentFilterRuleUpdateRequest, type ContentFilterRuleListResponse, type ContentFilterLog, type ContentFilterLogsQuery, type ContentFilterLogsResponse, type ContentFilterTestRequest, type CostAllocationRule, type CostAllocationRuleCreateRequest, type CostAllocationRuleUpdateRequest, type CostAllocationReport, type DepartmentsResponse, type FilterTextResult, type User, type UserCreateRequest, type UserUpdateRequest, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -954,5 +954,286 @@ export async function deletePricing(model: string): Promise<void> {
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to delete pricing: ${response.status}`)
+  }
+}
+
+// ── User Management API ──
+
+export async function fetchUsers(signal?: AbortSignal): Promise<User[]> {
+  const response = await apiFetch(apiPath('/users'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load users: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function createUser(req: UserCreateRequest): Promise<User> {
+  const response = await apiFetch(apiPath('/users'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create user: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateUser(id: string, req: UserUpdateRequest): Promise<User> {
+  const response = await apiFetch(apiPath(`/users/${id}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update user: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteUser(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/users/${id}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete user: ${response.status}`)
+  }
+}
+
+// ── Alert API ──
+
+export async function fetchAlertChannels(signal?: AbortSignal): Promise<AlertChannel[]> {
+  const response = await apiFetch(apiPath('/alerts/channels'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load alert channels: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function createAlertChannel(req: AlertChannelCreateRequest): Promise<AlertChannel> {
+  const response = await apiFetch(apiPath('/alerts/channels'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create alert channel: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateAlertChannel(id: number, req: AlertChannelUpdateRequest): Promise<AlertChannel> {
+  const response = await apiFetch(apiPath(`/alerts/channels/${id}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update alert channel: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteAlertChannel(id: number): Promise<void> {
+  const response = await apiFetch(apiPath(`/alerts/channels/${id}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete alert channel: ${response.status}`)
+  }
+}
+
+export async function fetchAlertRules(signal?: AbortSignal): Promise<AlertRule[]> {
+  const response = await apiFetch(apiPath('/alerts/rules'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load alert rules: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function createAlertRule(req: AlertRuleCreateRequest): Promise<AlertRule> {
+  const response = await apiFetch(apiPath('/alerts/rules'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create alert rule: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateAlertRule(id: number, req: AlertRuleUpdateRequest): Promise<AlertRule> {
+  const response = await apiFetch(apiPath(`/alerts/rules/${id}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update alert rule: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteAlertRule(id: number): Promise<void> {
+  const response = await apiFetch(apiPath(`/alerts/rules/${id}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete alert rule: ${response.status}`)
+  }
+}
+
+export async function fetchAlertEvents(limit: number, signal?: AbortSignal): Promise<AlertEvent[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  const response = await apiFetch(`${apiPath('/alerts/events')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load alert events: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function retryAlertEvent(id: number): Promise<AlertEventRetryResponse> {
+  const response = await apiFetch(apiPath(`/alerts/events/${id}/retry`), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to retry alert event: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ── Content Filter API ──
+
+export async function fetchContentFilterRules(signal?: AbortSignal): Promise<ContentFilterRule[]> {
+  const response = await apiFetch(apiPath('/contentfilter/rules'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load content filter rules: ${response.status}`)
+  }
+  const data = await response.json() as ContentFilterRuleListResponse
+  return data.rules
+}
+
+export async function createContentFilterRule(req: ContentFilterRuleCreateRequest): Promise<ContentFilterRule> {
+  const response = await apiFetch(apiPath('/contentfilter/rules'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create content filter rule: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateContentFilterRule(id: number, req: ContentFilterRuleUpdateRequest): Promise<ContentFilterRule> {
+  const response = await apiFetch(apiPath(`/contentfilter/rules/${id}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update content filter rule: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteContentFilterRule(id: number): Promise<void> {
+  const response = await apiFetch(apiPath(`/contentfilter/rules/${id}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete content filter rule: ${response.status}`)
+  }
+}
+
+export async function fetchContentFilterLogs(query: ContentFilterLogsQuery, signal?: AbortSignal): Promise<ContentFilterLogsResponse> {
+  const params = new URLSearchParams()
+  if (query.filter_type) params.set('filter_type', query.filter_type)
+  if (query.action) params.set('action', query.action)
+  if (typeof query.limit === 'number') params.set('limit', String(query.limit))
+  const response = await apiFetch(`${apiPath('/contentfilter/logs')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load content filter logs: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function testContentFilter(req: ContentFilterTestRequest, signal?: AbortSignal): Promise<FilterTextResult> {
+  const response = await apiFetch(apiPath('/contentfilter/test'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+    signal,
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to test content filter: ${response.status}`)
+  }
+  return response.json()
+}
+
+// ── Cost Allocation API ──
+
+export function costAllocationExportURL(dimension: string): string {
+  const params = new URLSearchParams({ dimension })
+  return `${apiPath('/costallocation/export.csv')}?${params.toString()}`
+}
+
+export async function fetchCostAllocationDepartments(dimension: string, signal?: AbortSignal): Promise<DepartmentsResponse> {
+  const params = new URLSearchParams({ dimension })
+  const response = await apiFetch(`${apiPath('/costallocation/departments')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load cost allocation departments: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchCostAllocationReport(dimension: string, signal?: AbortSignal): Promise<CostAllocationReport> {
+  const params = new URLSearchParams({ dimension })
+  const response = await apiFetch(`${apiPath('/costallocation/report')}?${params.toString()}`, { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load cost allocation report: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchCostAllocationRules(signal?: AbortSignal): Promise<CostAllocationRule[]> {
+  const response = await apiFetch(apiPath('/costallocation/rules'), { signal })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load cost allocation rules: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function createCostAllocationRule(req: CostAllocationRuleCreateRequest): Promise<CostAllocationRule> {
+  const response = await apiFetch(apiPath('/costallocation/rules'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to create cost allocation rule: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function updateCostAllocationRule(id: string, req: CostAllocationRuleUpdateRequest): Promise<CostAllocationRule> {
+  const response = await apiFetch(apiPath(`/costallocation/rules/${encodeURIComponent(id)}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to update cost allocation rule: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function deleteCostAllocationRule(id: string): Promise<void> {
+  const response = await apiFetch(apiPath(`/costallocation/rules/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to delete cost allocation rule: ${response.status}`)
   }
 }

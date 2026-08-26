@@ -900,3 +900,266 @@ export interface UsageFilterWindow {
   endMs?: number
   windowMinutes?: number
 }
+
+// ── Alert Types ──
+
+export type AlertPlatform = 'feishu' | 'dingtalk' | 'wecom';
+export type AlertMetricType = 'usage_threshold' | 'quota_exhausted' | 'error_rate';
+export type AlertConditionOperator = 'gt' | 'gte' | 'lt' | 'lte';
+export type AlertEventStatus = 'pending' | 'sent' | 'failed';
+
+export interface AlertChannel {
+  id: number;
+  name: string;
+  platform: AlertPlatform;
+  webhook_url: string;
+  secret?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertChannelCreateRequest {
+  name: string;
+  platform: AlertPlatform;
+  webhook_url: string;
+  secret?: string;
+  enabled?: boolean;
+}
+
+export interface AlertChannelUpdateRequest {
+  name?: string;
+  platform?: AlertPlatform;
+  webhook_url?: string;
+  secret?: string;
+  enabled?: boolean;
+}
+
+export interface AlertRule {
+  id: number;
+  name: string;
+  metric_type: AlertMetricType;
+  condition_op: AlertConditionOperator;
+  condition_val: number;
+  channel_id: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRuleCreateRequest {
+  name: string;
+  metric_type: AlertMetricType;
+  condition_op: AlertConditionOperator;
+  condition_val: number;
+  channel_id: number;
+  enabled?: boolean;
+}
+
+export interface AlertRuleUpdateRequest {
+  name?: string;
+  metric_type?: AlertMetricType;
+  condition_op?: AlertConditionOperator;
+  condition_val?: number;
+  channel_id?: number;
+  enabled?: boolean;
+}
+
+export interface AlertEvent {
+  id: number;
+  rule_id: number;
+  channel_id: number;
+  status: AlertEventStatus;
+  message: string;
+  attempt_count: number;
+  last_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertEventRetryResponse {
+  event: AlertEvent;
+  retry_error?: string;
+}
+
+// ── Content Filter Types ──
+
+export type FilterScenario = 'general' | 'finance' | 'medical' | 'custom'
+
+export type FilterAction = 'mask' | 'redact' | 'block'
+
+export interface ContentFilterRule {
+  id: number
+  name: string
+  description?: string
+  scenario: FilterScenario
+  action: FilterAction
+  enabled: boolean
+  pii_types?: string[]
+  sensitive_words?: string[]
+  white_list?: string[]
+  models?: string[]
+  priority: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ContentFilterRuleCreateRequest {
+  name: string
+  description?: string
+  scenario: FilterScenario
+  action: FilterAction
+  enabled?: boolean
+  pii_types?: string[]
+  sensitive_words?: string[]
+  white_list?: string[]
+  models?: string[]
+  priority?: number
+}
+
+export type ContentFilterRuleUpdateRequest = Partial<ContentFilterRuleCreateRequest>
+
+export interface ContentFilterRuleListResponse {
+  rules: ContentFilterRule[]
+}
+
+export interface ContentFilterLog {
+  id: number
+  created_at: string
+  rule_id?: number
+  rule_name?: string
+  model?: string
+  filter_type: string
+  action: FilterAction
+  match_count: number
+  raw_preview?: string
+  filtered_preview?: string
+}
+
+export interface ContentFilterLogsQuery {
+  filter_type?: string
+  action?: string
+  limit?: number
+}
+
+export interface ContentFilterLogsResponse {
+  logs: ContentFilterLog[]
+  total: number
+}
+
+export interface ContentFilterTestRequest {
+  text: string
+  model?: string
+}
+
+export interface FilterTextResult {
+  match_count: number
+  blocked: boolean
+  changed: boolean
+  block_reason?: string
+  action?: FilterAction
+  original_text?: string
+  matched_words: string[]
+  matched_pii: string[]
+  matched_rules?: string[]
+  filtered_text: string
+}
+
+// ── User Management Types ──
+
+export type UserRole = 'admin' | 'operator' | 'viewer';
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  role: UserRole;
+  api_key?: string;
+  quota: number;
+  used: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserCreateRequest {
+  username: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  quota?: number;
+}
+
+export interface UserUpdateRequest {
+  email?: string;
+  password?: string;
+  role?: UserRole;
+  quota?: number;
+  active?: boolean;
+}
+
+// ── Cost Allocation Types ──
+
+export type CostAllocationDimension = 'department' | 'team' | 'project';
+
+export type CostAllocationMatchType = 'api_key' | 'label';
+
+export interface CostAllocationRule {
+  id: string;
+  name: string;
+  dimension: CostAllocationDimension;
+  match_type: CostAllocationMatchType;
+  match_values: string[];
+  enabled: boolean;
+  priority: number;
+  note?: string;
+}
+
+export interface CostAllocationRuleCreateRequest {
+  name: string;
+  dimension: CostAllocationDimension;
+  match_type: CostAllocationMatchType;
+  match_values: string[];
+  enabled: boolean;
+  priority: number;
+  note?: string;
+}
+
+export interface CostAllocationRuleUpdateRequest {
+  name?: string;
+  dimension?: CostAllocationDimension;
+  match_type?: CostAllocationMatchType;
+  match_values?: string[];
+  enabled?: boolean;
+  priority?: number;
+  note?: string;
+}
+
+export interface CostAllocationReportItem {
+  name: string;
+  model: string;
+  requests: number;
+  total_tokens: number;
+  cost: number;
+  cost_share: number;
+}
+
+export interface CostAllocationReport {
+  items: CostAllocationReportItem[];
+}
+
+export interface DepartmentCostView {
+  name: string;
+  cost: number;
+  requests: number;
+  total_tokens: number;
+  cost_share: number;
+}
+
+export interface DepartmentsResponse {
+  departments: DepartmentCostView[];
+  total_cost: number;
+  unassigned_cost: number;
+  unassigned_requests: number;
+  cost_available: boolean;
+}

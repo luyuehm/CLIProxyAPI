@@ -786,6 +786,10 @@ for (const [tab, expected] of [
   ['events', true],
   ['auth-files', false],
   ['ai-provider', false],
+  ['alerts', false],
+  ['content-filter', false],
+  ['users', false],
+  ['cost-allocation', false],
   ['settings', false],
 ] as const) {
   it(`returns ${expected} for ${tab} range controls visibility`, () => {
@@ -800,6 +804,10 @@ for (const [tab, expected] of [
   ['events', true],
   ['auth-files', false],
   ['ai-provider', false],
+  ['alerts', false],
+  ['content-filter', false],
+  ['users', false],
+  ['cost-allocation', false],
   ['settings', false],
 ] as const) {
   it(`returns ${expected} for ${tab} API Key filter visibility`, () => {
@@ -818,6 +826,10 @@ describe('UsagePage tab labels', () => {
       'translated:usage_stats.tab_events',
       'translated:usage_stats.tab_auth_files',
       'translated:usage_stats.tab_ai_provider',
+      'translated:usage_stats.tab_alerts',
+      'translated:usage_stats.tab_content_filter',
+      'translated:usage_stats.tab_users',
+      'translated:usage_stats.tab_cost_allocation',
       'translated:usage_stats.tab_settings',
     ]);
   });
@@ -825,7 +837,7 @@ describe('UsagePage tab labels', () => {
   it('omits Ranking from the CPAMC embedded navigation', () => {
     const values = getUsageTabOptions((key) => key, { includeRanking: false }).map((option) => option.value);
 
-    expect(values).toEqual(['overview', 'analysis', 'events', 'auth-files', 'ai-provider', 'settings']);
+    expect(values).toEqual(['overview', 'analysis', 'events', 'auth-files', 'ai-provider', 'alerts', 'content-filter', 'users', 'cost-allocation', 'settings']);
   });
 });
 
