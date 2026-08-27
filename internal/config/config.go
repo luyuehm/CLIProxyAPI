@@ -160,4 +160,8 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// AlertEnterprise configures enterprise multi-channel alert notifications
+	// (Feishu/DingTalk/WeCom webhook robots). When nil, alerting is disabled.
+	AlertEnterprise *AlertEnterpriseConfig `yaml:"alert-enterprise,omitempty" json:"alert-enterprise,omitempty"`
 }

@@ -783,3 +783,21 @@ nonstream-keepalive-interval: 0
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
+
+# Enterprise alert notification configuration (Feishu/DingTalk/WeCom webhook robots).
+# When omitted entirely, alerting is disabled.
+# alert-enterprise:
+#   silence-period: 5m  # Minimum interval between duplicate alerts
+#   channels:
+#     feishu:
+#       enabled: false
+#       webhook-url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+#       sign-secret: ""
+#     dingtalk:
+#       enabled: false
+#       webhook-url: "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+#       sign-secret: "your-sign-secret"
+#     wecom:
+#       enabled: false
+#       webhook-url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+#       sign-secret: ""
