@@ -50,6 +50,9 @@ func (e *Engine) filterStream(w io.Writer, r io.Reader, rules []*Rule, inbound b
 // streamMasker is an io.Writer that buffers an SSE byte stream and emits each
 // complete event masked through the engine. It is used by the response writer
 // for text/event-stream responses so masking never buffers the whole stream.
+//
+// onClose (optional) is invoked with the most recent masked Result so the
+// middleware can enqueue an audit row once the stream completes.
 type streamMasker struct {
 	engine  *Engine
 	rules   []*Rule
@@ -57,13 +60,17 @@ type streamMasker struct {
 	out     io.Writer
 	inbound bool
 
-	buf bytes.Buffer
+	buf    bytes.Buffer
+	rawBuf bytes.Buffer // accumulates the raw event bytes for audit previews
+
+	onClose func(Result)
 }
 
 // Write buffers incoming bytes and emits any complete SSE events, masked.
 func (s *streamMasker) Write(p []byte) (int, error) {
 	n := len(p)
 	s.buf.Write(p)
+	s.rawBuf.Write(p) // raw copy for audit previews
 	if err := s.drain(); err != nil {
 		return n, err
 	}
@@ -80,9 +87,12 @@ func (s *streamMasker) drain() error {
 			return nil
 		}
 		event := s.buf.Next(end)
-		masked := s.engine.Apply(s.rules, string(event), s.inbound, s.model).Text
-		if _, err := io.WriteString(s.out, masked); err != nil {
+		masked := s.engine.Apply(s.rules, string(event), s.inbound, s.model)
+		if _, err := io.WriteString(s.out, masked.Text); err != nil {
 			return err
+		}
+		if s.onClose != nil && masked.Changed {
+			s.onClose(masked)
 		}
 		b = s.buf.Bytes()
 	}
@@ -101,13 +111,22 @@ func (s *streamMasker) nextEventEnd(b []byte) int {
 	return -1
 }
 
+// rawAccumulator returns the bytes accumulated by Write so far, used by the
+// middleware to populate audit previews.
+func (s *streamMasker) rawAccumulator() string {
+	return s.rawBuf.String()
+}
+
 // Close flushes any remaining partial event (masked) and returns nil. It does
 // not close the underlying writer.
 func (s *streamMasker) Close() error {
 	if s.buf.Len() > 0 {
-		masked := s.engine.Apply(s.rules, s.buf.String(), s.inbound, s.model).Text
-		if _, err := io.WriteString(s.out, masked); err != nil {
+		masked := s.engine.Apply(s.rules, s.buf.String(), s.inbound, s.model)
+		if _, err := io.WriteString(s.out, masked.Text); err != nil {
 			return err
+		}
+		if s.onClose != nil && masked.Changed {
+			s.onClose(masked)
 		}
 		s.buf.Reset()
 	}

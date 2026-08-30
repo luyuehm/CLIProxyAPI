@@ -153,11 +153,21 @@ func minInt(a, b int) int {
 	return b
 }
 
-// Result carries the outcome of applying rules to a piece of text.
+// Result carries the outcome of applying rules to a piece of text. The
+// RuleHits slice lists per-rule matches (rule id, name, matched values) so
+// callers can write one audit row per hit.
 type Result struct {
-	Changed bool
-	Text    string
-	Matches []string
+	Changed  bool
+	Text     string
+	Matches  []string
+	RuleHits []RuleHit
+}
+
+// RuleHit is one rule's matches. It is the basis for audit rows.
+type RuleHit struct {
+	RuleID   int64
+	RuleName string
+	Matches  []string
 }
 
 // ruleApplicable reports whether a rule applies to the given upstream model.
@@ -239,6 +249,7 @@ func (e *Engine) Apply(rules []*Rule, text string, inbound bool, model string) R
 
 	out := text
 	var matches []string
+	var hits []RuleHit
 	changed := false
 
 	for _, r := range rules {
@@ -249,9 +260,10 @@ func (e *Engine) Apply(rules []*Rule, text string, inbound bool, model string) R
 		if len(m) > 0 {
 			changed = true
 			matches = append(matches, m...)
+			hits = append(hits, RuleHit{RuleID: r.ID, RuleName: r.Name, Matches: m})
 			out = filtered
 		}
 	}
 
-	return Result{Changed: changed, Text: out, Matches: matches}
+	return Result{Changed: changed, Text: out, Matches: matches, RuleHits: hits}
 }

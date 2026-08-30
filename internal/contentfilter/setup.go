@@ -31,9 +31,9 @@ const (
 
 // ServerOption returns an api.ServerOption that installs the realtime content
 // filter middleware, constructing the rule syncer (initial load + background
-// polling) at server construction time. It returns nil when the filter is
-// disabled by configuration and no KEEPER source is reachable — callers should
-// skip the option in that case.
+// polling) and audit writer at server construction time. It returns nil when
+// the filter is disabled by configuration and no KEEPER source is reachable —
+// callers should skip the option in that case.
 //
 // The returned option mounts through the pre-reserved api.WithMiddleware()
 // extension point; it does not modify any upstream handler or core file.
@@ -52,8 +52,21 @@ func ServerOption() api.ServerOption {
 	// restarting the gateway.
 	syncer.Start()
 	engine := NewEngine(true) // outbound PII uses partial masking
-	mw := NewMiddleware(syncer, engine)
+	audit := NewAudit(auditEnvFromSyncer(opts))
+	mw := NewMiddleware(syncer, engine, audit)
 	return api.WithMiddleware(mw.Handler())
+}
+
+// auditEnvFromSyncer converts a SyncerOptions into AuditEnv, sharing the
+// KEEPER host / container paths and adding the queue / timeout defaults.
+func auditEnvFromSyncer(s SyncerOptions) AuditEnv {
+	return AuditEnv{
+		HostDBPath:      s.HostDBPath,
+		ContainerName:   s.ContainerName,
+		ContainerDBPath: s.ContainerDBPath,
+		DockerCmd:       s.DockerCmd,
+		WriteTimeout:    DefaultDockerCopyTimeout,
+	}
 }
 
 // enabledFromEnv resolves the enable switch. An explicit env value wins;
