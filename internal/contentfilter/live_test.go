@@ -1,9 +1,16 @@
 package contentfilter
 
 import (
+	"context"
+	"database/sql"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // TestLiveKeeperIntegration verifies the syncer can pull rules from the real
@@ -66,4 +73,136 @@ func TestLiveKeeperIntegration(t *testing.T) {
 	if s.Stale() {
 		t.Fatalf("syncer marked stale after successful load")
 	}
+}
+
+// TestLiveAuditWriteBack proves that the audit writer enqueues a row and the
+// row lands in KEEPER's content_filter_logs table via the docker-cp path. It
+// runs only when CPA_CONTENT_FILTER_LIVE_TEST=1.
+//
+// The test pulls a snapshot of the KEEPER db before, fires one inbound
+// sensitive-word hit through the audit writer, then pulls a snapshot after
+// and asserts a new row exists with the expected fields.
+func TestLiveAuditWriteBack(t *testing.T) {
+	if os.Getenv("CPA_CONTENT_FILTER_LIVE_TEST") != "1" {
+		t.Skip("live audit test skipped (set CPA_CONTENT_FILTER_LIVE_TEST=1)")
+	}
+	container := "enterprise-keeper-cpa-usage-keeper-1"
+	dbPath := "/data/app.db"
+
+	before := countLogs(t, container, dbPath)
+	t.Logf("KEEPER content_filter_logs rows before: %d", before)
+
+	audit := NewAudit(AuditEnv{
+		HostDBPath:     "", // not present on macOS
+		ContainerName:  container,
+		ContainerDBPath: dbPath,
+		DockerCmd:      "docker",
+		QueueSize:      16,
+		WriteTimeout:   10 * time.Second,
+	})
+	defer audit.Close()
+
+	res := audit.Enqueue(AuditRow{
+		RuleID:          9999,
+		RuleName:        "live-test-rule",
+		FilterType:      "inbound",
+		MatchCount:      1,
+		Matches:         "绝密文件",
+		Action:          "mask",
+		Model:           "gpt-5",
+		ClientIP:        "127.0.0.1",
+		UserID:          "auth:live",
+		RawPreview:      "test 绝密文件 [live]",
+		FilteredPreview: "test **** [live]",
+		CreatedAt:       time.Now().UTC(),
+	})
+	if !res.Enqueued {
+		t.Fatalf("expected enqueued, got %+v", res)
+	}
+
+	// Wait for the worker to flush (docker cp round-trip takes ~1s).
+	deadline := time.Now().Add(15 * time.Second)
+	var after int
+	for time.Now().Before(deadline) {
+		after = countLogs(t, container, dbPath)
+		if after > before {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if after <= before {
+		t.Fatalf("audit row did not land in KEEPER: before=%d after=%d", before, after)
+	}
+	t.Logf("KEEPER content_filter_logs rows after: %d (delta=%d)", after, after-before)
+
+	// Verify the new row has the expected fields.
+	db := pullKEEPER(t, container, dbPath)
+	defer db.Close()
+	row := db.QueryRow(
+		`SELECT rule_id, rule_name, filter_type, match_count, matches, action, model, client_ip, raw_preview, filtered_preview
+		   FROM content_filter_logs ORDER BY id DESC LIMIT 1`)
+	var (
+		rid     int64
+		rname   string
+		ftype   string
+		mcount  int
+		matches sql.NullString
+		action  string
+		model   sql.NullString
+		ip      sql.NullString
+		raw     sql.NullString
+		filt    sql.NullString
+	)
+	if err := row.Scan(&rid, &rname, &ftype, &mcount, &matches, &action, &model, &ip, &raw, &filt); err != nil {
+		t.Fatalf("scan latest row: %v", err)
+	}
+	if rid != 9999 || rname != "live-test-rule" || ftype != "inbound" || mcount != 1 {
+		t.Fatalf("row fields wrong: rid=%d name=%q ftype=%q count=%d", rid, rname, ftype, mcount)
+	}
+	if !matches.Valid || !strings.Contains(matches.String, "绝密文件") {
+		t.Fatalf("matches wrong: %#v", matches)
+	}
+	if !raw.Valid || !strings.Contains(raw.String, "绝密文件") {
+		t.Fatalf("raw_preview missing sensitive word: %#v", raw)
+	}
+	if !filt.Valid || strings.Contains(filt.String, "绝密文件") {
+		t.Fatalf("filtered_preview should not contain the original: %#v", filt)
+	}
+	t.Logf("latest KEEPER audit row: id/rule_id=%d name=%q ftype=%q raw=%q filtered=%q",
+		rid, rname, ftype, raw.String, filt.String)
+}
+
+// countLogs returns the number of rows currently in KEEPER's
+// content_filter_logs table.
+func countLogs(t *testing.T, container, dbPath string) int {
+	t.Helper()
+	db := pullKEEPER(t, container, dbPath)
+	defer db.Close()
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM content_filter_logs").Scan(&n); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return n
+}
+
+// pullKEEPER copies the KEEPER app.db into a temp file and opens it read-only.
+func pullKEEPER(t *testing.T, container, dbPath string) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+	local := filepath.Join(dir, "app.db")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "cp", container+":"+dbPath, local)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("docker cp: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	db, err := sql.Open("sqlite", "file:"+local+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open pulled db: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
+		t.Fatalf("busy_timeout: %v", err)
+	}
+	return db
 }

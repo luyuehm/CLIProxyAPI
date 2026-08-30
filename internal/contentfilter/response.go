@@ -23,6 +23,7 @@ type filterResponseWriter struct {
 	engine *Engine
 	rules  []*Rule
 	model  string
+	mw     *Middleware
 
 	status       int
 	headerCalled bool
@@ -30,6 +31,9 @@ type filterResponseWriter struct {
 	bypassed     bool // content cannot be filtered (gzip etc.)
 	buffered     bytes.Buffer
 	streamer     *streamMasker
+	// outResult is populated by finalize / stream close so the middleware
+	// can enqueue outbound audit rows with both raw and filtered previews.
+	outResult *Result
 }
 
 // isStream reports whether the response is an SSE stream, based on the
@@ -75,17 +79,25 @@ func (w *filterResponseWriter) WriteHeader(code int) {
 }
 
 // ensureStreamer initializes the per-stream masker lazily so plain responses
-// never pay for it.
+// never pay for it. The streamer stores the masked result so the middleware
+// can audit it once the stream closes.
 func (w *filterResponseWriter) ensureStreamer() {
 	if w.streamer != nil {
 		return
 	}
 	w.streamer = &streamMasker{
-		engine: w.engine,
-		rules:  w.rules,
-		model:  w.model,
-		out:    w.ResponseWriter,
+		engine:  w.engine,
+		rules:   w.rules,
+		model:   w.model,
+		out:     w.ResponseWriter,
+		onClose: w.captureOutbound,
 	}
+}
+
+// captureOutbound records the most recent masked outbound result so the
+// middleware can audit it after the request completes.
+func (w *filterResponseWriter) captureOutbound(res Result) {
+	w.outResult = &res
 }
 
 // Write buffers or streams the response body. Streaming writes are masked
@@ -161,6 +173,12 @@ func (w *filterResponseWriter) finalize() {
 		w.ensureHeader()
 		w.streamer.Close()
 		w.flush()
+		if w.outResult != nil && w.outResult.Changed && w.mw != nil {
+			// Raw preview is approximated as the streamed body that was
+			// accumulated; for the streaming case the raw text is the
+			// concatenation of all event payloads the masker saw.
+			w.mw.enqueueOutboundAudit(w.outResult, w.model, w.streamer.rawAccumulator())
+		}
 		return
 	}
 	if w.bypassed || w.buffered.Len() == 0 {
@@ -168,14 +186,17 @@ func (w *filterResponseWriter) finalize() {
 		return
 	}
 	body := w.buffered.Bytes()
-	masked := w.engine.Apply(w.rules, string(body), false, w.model).Text
-	if len(body) != len(masked) {
+	masked := w.engine.Apply(w.rules, string(body), false, w.model)
+	if len(body) != len(masked.Text) {
 		// Length changed; the Content-Length header would be stale.
 		w.Header().Del("Content-Length")
 	}
+	if masked.Changed && w.mw != nil {
+		w.mw.enqueueOutboundAudit(&masked, w.model, string(body))
+	}
 	w.ensureHeader()
-	if masked != string(body) {
-		_, _ = io.WriteString(w.ResponseWriter, masked)
+	if masked.Changed {
+		_, _ = io.WriteString(w.ResponseWriter, masked.Text)
 	} else {
 		_, _ = w.buffered.WriteTo(w.ResponseWriter)
 	}
