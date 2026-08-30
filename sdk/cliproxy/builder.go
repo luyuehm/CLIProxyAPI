@@ -9,6 +9,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -289,6 +290,13 @@ func (b *Builder) Build() (*Service, error) {
 			service.reloadConfigFromWatcher()
 		}),
 	)
+	// Realtime content filter (internal/contentfilter): mounts through the
+	// pre-reserved api.WithMiddleware() extension point. Enabled via
+	// CPA_CONTENT_FILTER_ENABLED; pulls rules from KEEPER app.db (30s poll).
+	// Returns nil when disabled, so this line is a no-op by default.
+	if cfOpt := contentfilter.ServerOption(); cfOpt != nil {
+		service.serverOptions = append(service.serverOptions, cfOpt)
+	}
 	return service, nil
 }
 
