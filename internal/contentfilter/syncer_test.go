@@ -117,7 +117,7 @@ func TestSyncerReloadAndStop(t *testing.T) {
 	})
 
 	opts := SyncerOptions{
-		HostDBPath:     path,
+		HostDBPath:      path,
 		RefreshInterval: time.Hour, // no background ticks in this test
 	}
 	s, err := NewSyncer(opts)

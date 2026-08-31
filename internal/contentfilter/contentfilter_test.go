@@ -29,7 +29,7 @@ func TestParseCSV(t *testing.T) {
 		{"   ", nil},
 		{"绝密文件", []string{"绝密文件"}},
 		{"phone, id_card ,email", []string{"phone", "id_card", "email"}},
-		{"a,,b, a", []string{"a", "b"}}, // dedup + trim
+		{"a,,b, a", []string{"a", "b"}},                        // dedup + trim
 		{"绝密文件\n商业机密\n内部机密", []string{"绝密文件", "商业机密", "内部机密"}}, // newline sep (KEEPER prod)
 	}
 	for _, c := range cases {
@@ -78,8 +78,8 @@ func TestEngineSensitiveWordsInbound(t *testing.T) {
 func TestEnginePhonePartialMaskOutbound(t *testing.T) {
 	e := NewEngine(true)
 	rules := []*Rule{newTestRule(1, "r1", nil, []PIIType{PIIPhone})}
-	res := e.Apply(rules, "联系电话 13800138000 请查收", false, "")
-	want := "联系电话 138****8000 请查收"
+	res := e.Apply(rules, "联系电话 13812345678 请查收", false, "")
+	want := "联系电话 138****5678 请查收"
 	if res.Text != want {
 		t.Fatalf("Apply = %q, want %q", res.Text, want)
 	}
@@ -91,7 +91,7 @@ func TestEnginePhonePartialMaskOutbound(t *testing.T) {
 func TestEnginePhoneFullMaskInbound(t *testing.T) {
 	e := NewEngine(true)
 	rules := []*Rule{newTestRule(1, "r1", nil, []PIIType{PIIPhone})}
-	res := e.Apply(rules, "手机13800138000", true, "")
+	res := e.Apply(rules, "手机13812345678", true, "")
 	want := "手机***********"
 	if res.Text != want {
 		t.Fatalf("Apply = %q, want %q", res.Text, want)
@@ -121,9 +121,9 @@ func TestEngineEmailPartialMaskOutbound(t *testing.T) {
 func TestEngineBankCardPartialMaskOutbound(t *testing.T) {
 	e := NewEngine(true)
 	rules := []*Rule{newTestRule(1, "r1", nil, []PIIType{PIIBankCard})}
-	res := e.Apply(rules, "卡号 6222021234567890123 已绑定", false, "")
+	res := e.Apply(rules, "卡号 9342253601060259203 已绑定", false, "")
 	// 19 digits -> keep 4 head (6222), 4 tail (0123)
-	want := "卡号 6222***********0123 已绑定"
+	want := "卡号 9342***********9203 已绑定"
 	if res.Text != want {
 		t.Fatalf("Apply = %q, want %q", res.Text, want)
 	}
@@ -142,13 +142,13 @@ func TestEnginePassportPartialMaskOutbound(t *testing.T) {
 func TestEngineWhitelist(t *testing.T) {
 	e := NewEngine(true)
 	r := newTestRule(1, "r1", nil, []PIIType{PIIPhone})
-	r.WhiteList = []string{"13800138000"}
+	r.WhiteList = []string{"13812345678"}
 	rules := []*Rule{r}
-	res := e.Apply(rules, "白名单 13800138000 保留", false, "")
+	res := e.Apply(rules, "白名单 13812345678 保留", false, "")
 	if res.Changed {
 		t.Fatalf("expected no change, got %q", res.Text)
 	}
-	if res.Text != "白名单 13800138000 保留" {
+	if res.Text != "白名单 13812345678 保留" {
 		t.Fatalf("Apply = %q, want unchanged", res.Text)
 	}
 }
@@ -194,8 +194,8 @@ func TestFilterStream(t *testing.T) {
 	// holds multi-line events until their blank line.
 	chunks := []string{
 		"data: {\"ph",
-		"one\":\"1380013800",
-		"0\"}\n\nda",
+		"one\":\"1381234567",
+		"8\"}\n\nda",
 		"ta: [DONE]\n\n",
 	}
 	var out bytes.Buffer
@@ -213,7 +213,7 @@ func TestFilterStream(t *testing.T) {
 	if err := sm.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	want := "data: {\"phone\":\"138****8000\"}\n\ndata: [DONE]\n\n"
+	want := "data: {\"phone\":\"138****5678\"}\n\ndata: [DONE]\n\n"
 	if out.String() != want {
 		t.Fatalf("streamed = %q, want %q", out.String(), want)
 	}
@@ -289,11 +289,11 @@ func TestAppliesToModel(t *testing.T) {
 // TestMaskHelper sanity-checks the partial masker helper.
 func TestMaskHelper(t *testing.T) {
 	e := NewEngine(true)
-	got := e.maskPII(PIIPhone, "13800138000", false)
-	if got != "138****8000" {
-		t.Fatalf("maskPII = %q, want 138****8000", got)
+	got := e.maskPII(PIIPhone, "13812345678", false)
+	if got != "138****5678" {
+		t.Fatalf("maskPII = %q, want 138****5678", got)
 	}
-	gotFull := e.maskPII(PIIPhone, "13800138000", true)
+	gotFull := e.maskPII(PIIPhone, "13812345678", true)
 	if !strings.Contains(gotFull, "***") {
 		t.Fatalf("inbound mask should contain asterisks: %q", gotFull)
 	}
