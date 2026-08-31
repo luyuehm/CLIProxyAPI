@@ -11,12 +11,45 @@
 package contentfilter
 
 import (
+	"regexp"
 	"strings"
 )
 
 // Action values supported by KEEPER content_filter_rules.
 const (
 	ActionMask = "mask"
+	// ActionLog records matches in the audit log but does not rewrite the
+	// text. Use for noisy rules where the cost of false positives outweighs
+	// the benefit of strict masking.
+	ActionLog = "log"
+	// ActionAllow is a synonym for "rule disabled" preserved for the
+	// KEEPER UI: it tells the engine to skip the rule even if it has
+	// sensitive words or PII types attached.
+	ActionAllow = "allow"
+)
+
+// WhitelistMode selects how isWhitelisted compares a captured value to the
+// rule's whitelist entries. The default (empty value) preserves the
+// existing substring behaviour for backward compatibility; new rules can
+// opt into stricter modes to drop false positives.
+type WhitelistMode string
+
+const (
+	// WhitelistModeExact (default) matches the whole captured value.
+	WhitelistModeExact WhitelistMode = "exact"
+	// WhitelistModePrefix matches when the captured value starts with the
+	// whitelist entry.
+	WhitelistModePrefix WhitelistMode = "prefix"
+	// WhitelistModeSuffix matches when the captured value ends with the
+	// whitelist entry.
+	WhitelistModeSuffix WhitelistMode = "suffix"
+	// WhitelistModeContains matches when the whitelist entry appears
+	// anywhere in the captured value. The matched substring is left
+	// visible; surrounding characters are still masked.
+	WhitelistModeContains WhitelistMode = "contains"
+	// WhitelistModeRegex matches the captured value against the whitelist
+	// entry interpreted as a Go regular expression (RE2 syntax).
+	WhitelistModeRegex WhitelistMode = "regex"
 )
 
 // PIIType identifies a category of personally identifiable information that a
@@ -26,35 +59,64 @@ type PIIType string
 // Supported PII types. The regexes live in engine.go so that all matching
 // logic stays in one place.
 const (
-	PIIPhone        PIIType = "phone"
-	PIIIDCard       PIIType = "id_card"
-	PIIEmail        PIIType = "email"
-	PIIBankCard     PIIType = "bank_card"
-	PIIPassport     PIIType = "passport"
+	PIIPhone         PIIType = "phone"
+	PIIIDCard        PIIType = "id_card"
+	PIIEmail         PIIType = "email"
+	PIIBankCard      PIIType = "bank_card"
+	PIIPassport      PIIType = "passport"
 	PIIMedicalRecord PIIType = "medical_record"
 )
 
 // Rule mirrors one row of KEEPER's content_filter_rules table. Sensitive
 // words and PII types are stored as comma-separated text and parsed into
 // slices when the rule is loaded.
+//
+// RIC-440 (2026-08-31) extends Rule with three fields that drive
+// false-positive reduction without changing the on-disk schema: existing
+// columns (sensitive_words / white_list / action) absorb the new modes, and
+// KEEPER can add the optional columns through migrations. For the v1
+// deployment we read the new fields from a sibling kv table
+// content_filter_rule_meta (see loadRuleMeta) so existing rules do not need
+// to be reimported.
 type Rule struct {
-	ID            int64    `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Enabled       bool     `json:"enabled"`
-	Scenario      string   `json:"scenario"`
-	Action        string   `json:"action"`
-	SensitiveWords []string `json:"sensitive_words"`
-	PIITypes      []PIIType `json:"pii_types"`
-	WhiteList     []string `json:"white_list"`
-	Models        []string `json:"models"`
-	Priority      int64    `json:"priority"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description"`
+	Enabled        bool      `json:"enabled"`
+	Scenario       string    `json:"scenario"`
+	Action         string    `json:"action"`
+	SensitiveWords []string  `json:"sensitive_words"`
+	PIITypes       []PIIType `json:"pii_types"`
+	WhiteList      []string  `json:"white_list"`
+	Models         []string  `json:"models"`
+	Priority       int64     `json:"priority"`
+
+	// ----- RIC-440 false-positive tuning (optional) -----
+
+	// WhitelistMode selects how WhiteList entries are matched. Empty /
+	// WhitelistModeExact preserve the prior substring semantics.
+	WhitelistMode WhitelistMode `json:"whitelist_mode,omitempty"`
+
+	// ContextExcludes lists keywords whose presence in the +/-16-character
+	// neighbourhood of a PII match exempts the match. Common exemptions:
+	// "编号", "订单号", "工单号", "ISBN", "commit", "sha256", "hash".
+	// Each value is matched case-insensitively as a substring.
+	ContextExcludes []string `json:"context_excludes,omitempty"`
+
+	// MinMatchLen is the minimum length (in bytes) a PII match must span
+	// to be considered. Bank-card numbers below 13 digits etc. are dropped.
+	MinMatchLen int `json:"min_match_len,omitempty"`
 }
 
 // enabled reports whether the rule is active. A rule must be enabled and carry
-// either sensitive words or PII types to be applied.
+// either sensitive words or PII types to be applied. An "allow" action also
+// disables the rule (the rule's purpose is now to record / log matches
+// elsewhere, not mask).
 func (r *Rule) enabled() bool {
 	if r == nil || !r.Enabled {
+		return false
+	}
+	if r.Action == ActionAllow {
 		return false
 	}
 	return len(r.SensitiveWords) > 0 || len(r.PIITypes) > 0
@@ -79,12 +141,89 @@ func (r *Rule) appliesToModel(model string) bool {
 }
 
 // isWhitelisted reports whether the given value is explicitly excluded from
-// masking by the rule's whitelist.
+// masking by the rule's whitelist. The match mode is r.WhitelistMode, default
+// WhitelistModeExact (full-value case-insensitive equality, which preserves
+// the prior substring semantics when the same value appears in both sides).
+//
+// Regex mode compiles whitelist entries lazily; an invalid regex treats
+// the entry as a literal so a typo never silently disables a rule.
 func (r *Rule) isWhitelisted(value string) bool {
 	if r == nil || len(r.WhiteList) == 0 {
 		return false
 	}
+	mode := r.WhitelistMode
+	if mode == "" {
+		mode = WhitelistModeExact
+	}
 	trimmed := strings.TrimSpace(value)
+	switch mode {
+	case WhitelistModeExact:
+		for _, w := range r.WhiteList {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			if strings.EqualFold(w, trimmed) {
+				return true
+			}
+		}
+	case WhitelistModePrefix:
+		for _, w := range r.WhiteList {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(w)) {
+				return true
+			}
+		}
+	case WhitelistModeSuffix:
+		for _, w := range r.WhiteList {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			if strings.HasSuffix(strings.ToLower(trimmed), strings.ToLower(w)) {
+				return true
+			}
+		}
+	case WhitelistModeContains:
+		lower := strings.ToLower(trimmed)
+		for _, w := range r.WhiteList {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			if strings.Contains(lower, strings.ToLower(w)) {
+				return true
+			}
+		}
+	case WhitelistModeRegex:
+		for _, w := range r.WhiteList {
+			w = strings.TrimSpace(w)
+			if w == "" {
+				continue
+			}
+			re, err := regexp.Compile(w)
+			if err != nil {
+				// Fall back to literal substring match on regex compile error.
+				if strings.Contains(strings.ToLower(trimmed), strings.ToLower(w)) {
+					return true
+				}
+				continue
+			}
+			if re.MatchString(trimmed) {
+				return true
+			}
+		}
+	default:
+		// Unknown mode: fall back to exact.
+		return r.isWhitelistedExact(trimmed)
+	}
+	return false
+}
+
+func (r *Rule) isWhitelistedExact(trimmed string) bool {
 	for _, w := range r.WhiteList {
 		w = strings.TrimSpace(w)
 		if w == "" {

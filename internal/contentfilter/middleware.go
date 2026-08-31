@@ -16,8 +16,12 @@ import (
 const upstreamModelHeader = "X-CPA-Upstream-Model"
 
 // auditPreviewMax caps the size of raw / filtered previews stored per audit
-// row so a single huge request does not balloon the audit table.
-const auditPreviewMax = 4 << 10 // 4 KiB
+// row. RIC-440 (2026-08-31) drops the cap from 4 KiB to 1 KiB — the audit
+// log had grown past 6 GiB on production KEEPER instances and previews
+// dominated row size. 1 KiB is still large enough to capture the matched
+// line plus ~200 chars on each side for triage; the full body is available
+// via the request-id lookup in the gateway trace.
+const auditPreviewMax = 1 << 10 // 1 KiB
 
 // Middleware applies content filter rules to every request passing through it.
 // It is constructed from a syncer (the live rule source) and an engine. The
@@ -151,7 +155,7 @@ func (m *Middleware) enqueueAudit(c *gin.Context, res Result, direction, model, 
 			RuleName:        hit.RuleName,
 			FilterType:      direction,
 			MatchCount:      len(hit.Matches),
-			Matches:         strings.Join(hit.Matches, ","),
+			Matches:         MarshalMatchesJSON(hit.Matches),
 			Action:          "mask",
 			Model:           model,
 			ClientIP:        clientIP,
@@ -183,7 +187,7 @@ func (m *Middleware) enqueueOutboundAudit(res *Result, model, raw string) {
 			RuleName:        hit.RuleName,
 			FilterType:      "outbound",
 			MatchCount:      len(hit.Matches),
-			Matches:         strings.Join(hit.Matches, ","),
+			Matches:         MarshalMatchesJSON(hit.Matches),
 			Action:          "mask",
 			Model:           model,
 			ClientIP:        clientIP,

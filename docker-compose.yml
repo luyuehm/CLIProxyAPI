@@ -1,7 +1,11 @@
 services:
   cli-proxy-api:
-    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
-    pull_policy: always
+    # RIC-442: pinned to the locally-built contentfilter image with the new
+    # HTTP-first audit writer. Using a direct tag (not an env var) so a stale
+    # CLI_PROXY_IMAGE in .env cannot pull the old remote image over this
+    # deployment.
+    image: cli-proxy-api:deploy-ric442
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile
@@ -14,6 +18,14 @@ services:
     #   - .env
     environment:
       DEPLOY: ${DEPLOY:-}
+      # RIC-442: content filter stays ENABLED (CPA reads content_filter_rules
+      # read-only via mode=ro on the mounted volume). Audit rows are shipped to
+      # KEEPER over HTTP (POST /contentfilter/logs/ingest) so KEEPER remains
+      # the single writer of app.db — CPA never opens it writable, so owner
+      # drift to host uid 501 / "readonly database" cannot recur.
+      CPA_CONTENT_FILTER_ENABLED: "1"
+      CPA_CONTENT_FILTER_AUDIT_KEEPER_URL: "http://host.docker.internal:4320"
+      CPA_CONTENT_FILTER_AUDIT_KEEPER_KEY: "LUyao123@"
     ports:
       - "8317:8317"
       - "8085:8085"
@@ -26,4 +38,17 @@ services:
       - ${CLI_PROXY_AUTH_PATH:-./auths}:/root/.cli-proxy-api
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
       - ${CLI_PROXY_PLUGIN_PATH:-./plugins}:/CLIProxyAPI/plugins
+      # RIC-442: expose the KEEPER SQLite volume read-only at the content
+      # filter's default host-DB path. The rule syncer only ever READS
+      # content_filter_rules; audit logs are shipped to KEEPER over HTTP
+      # (POST /contentfilter/logs/ingest) so KEEPER stays the single writer.
+      # Mounting :rw let the RIC-438 audit writer open app.db mode=rwc and
+      # docker-cp write-backs chowned the file to host uid 501, locking KEEPER
+      # out ("attempt to write a readonly database"). :ro makes a second
+      # writer impossible at the mount layer.
+      - enterprise-keeper_keeper-data:/var/lib/docker/volumes/enterprise-keeper_keeper-data/_data:ro
     restart: unless-stopped
+
+volumes:
+  enterprise-keeper_keeper-data:
+    external: true
