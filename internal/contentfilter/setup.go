@@ -69,6 +69,32 @@ func ServerOption() api.ServerOption {
 	return api.WithMiddleware(mw.Handler())
 }
 
+// ExportServerOption returns an api.ServerOption that registers the RIC-443
+// audit export endpoint (GET /v0/management/contentfilter/export) with the
+// KEEPER-facing download handler. It is wired alongside ServerOption in
+// sdk/cliproxy/builder.go; both share the same env-based enable switch and
+// KEEPER source resolution.
+//
+// The returned option is nil when the content filter is disabled — callers
+// should skip the option in that case. The endpoint rides the management-key
+// auth of the /v0/management group, so only callers holding the management
+// key can trigger a download.
+func ExportServerOption() api.ServerOption {
+	if !enabledFromEnv() {
+		logger.Warn("content filter export disabled (set " + EnvEnabled + "=true and configure a KEEPER source to enable)")
+		return nil
+	}
+	opts := optsFromEnv()
+	src := ExportSource{
+		HostDBPath:      opts.HostDBPath,
+		ContainerName:   opts.ContainerName,
+		ContainerDBPath: opts.ContainerDBPath,
+		DockerCmd:       opts.DockerCmd,
+		SidecarPath:     defaultSidecarPath(),
+	}
+	return api.WithContentFilterExportHandler(ExportHTTPHandler(src))
+}
+
 // auditEnvFromSyncer converts a SyncerOptions into AuditEnv, sharing the
 // KEEPER host / container paths and adding the queue / timeout defaults.
 //

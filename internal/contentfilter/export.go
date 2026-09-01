@@ -51,6 +51,11 @@ type ExportFilter struct {
 	Limit int
 	// ChunkSize is the row chunk used for streaming. Default 1000 when 0.
 	ChunkSize int
+	// Masker optionally rewrites each exported record before it is written.
+	// RIC-443 uses it to re-mask the sensitive columns (raw_preview, matches)
+	// with the live rule engine so the downloaded audit file never leaks the
+	// original sensitive text (CONTEXT_RULE). Nil leaves records untouched.
+	Masker func(*ExportRecord)
 }
 
 // ExportResult summarises a single export call. Rows is the number of rows
@@ -101,11 +106,29 @@ func ExportLogs(src ExportSource, filter ExportFilter, format ExportFormat, outP
 	}
 	defer closer()
 
-	rows, err := streamExportRows(f, db, filter, format)
+	rows, err := StreamExportLogs(f, db, filter, format)
 	if err != nil {
 		return ExportResult{}, err
 	}
 	return ExportResult{Rows: rows, Format: format, Path: outPath}, nil
+}
+
+// StreamExportLogs streams the matching content_filter_logs rows from an
+// already-open KEEPER database to w in the chosen format. It is the writer
+// variant of ExportLogs: RIC-443 uses it to stream a download directly to the
+// HTTP response instead of materialising a temp file first.
+func StreamExportLogs(w io.Writer, db *sql.DB, filter ExportFilter, format ExportFormat) (int, error) {
+	if format == "" {
+		format = ExportCSV
+	}
+	format = ExportFormat(strings.ToLower(string(format)))
+	if format != ExportCSV && format != ExportJSON && format != ExportJSONL {
+		return 0, fmt.Errorf("contentfilter: unsupported export format %q", format)
+	}
+	if w == nil {
+		return 0, fmt.Errorf("contentfilter: nil export writer")
+	}
+	return streamExportRows(w, db, filter, format)
 }
 
 func openExportSource(src ExportSource) (*sql.DB, func(), error) {
@@ -242,6 +265,9 @@ func streamExportRows(w io.Writer, db *sql.DB, filter ExportFilter, format Expor
 			if err != nil {
 				rows.Close()
 				return written, err
+			}
+			if filter.Masker != nil {
+				filter.Masker(&rec)
 			}
 			switch format {
 			case ExportCSV:

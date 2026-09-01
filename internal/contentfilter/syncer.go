@@ -298,7 +298,14 @@ func readRulesFromDB(dbPath string) ([]*Rule, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("content filter: ping keeper db: %w", err)
 	}
+	return readRulesFromOpenDB(db)
+}
 
+// readRulesFromOpenDB loads all enabled rules from an already-open read-only
+// connection to the KEEPER database. RIC-443 uses it inside the export
+// handler: the handler already holds a read-only db handle (openExportSource),
+// so it can re-mask previews with the latest rules without a second poll loop.
+func readRulesFromOpenDB(db *sql.DB) ([]*Rule, error) {
 	rows, err := db.QueryContext(context.Background(),
 		`SELECT id, name, IFNULL(description, ''), COALESCE(enabled, 1), COALESCE(scenario, 'general'),
 		        COALESCE(action, 'mask'), IFNULL(sensitive_words, ''), IFNULL(pii_types, ''),

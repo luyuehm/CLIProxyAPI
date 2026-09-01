@@ -95,6 +95,7 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/logs", s.mgmt.GetLogs)
 		mgmt.DELETE("/logs", s.mgmt.DeleteLogs)
+		mgmt.GET("/contentfilter/export", s.serveContentFilterExport)
 		mgmt.GET("/request-error-logs", s.mgmt.GetRequestErrorLogs)
 		mgmt.GET("/request-error-logs/:name", s.mgmt.DownloadRequestErrorLog)
 		mgmt.GET("/request-log-by-id/:id", s.mgmt.GetRequestLogByID)
@@ -181,6 +182,18 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}
+}
+
+// serveContentFilterExport dispatches the RIC-443 audit export endpoint to
+// the handler injected via WithContentFilterExportHandler. When no handler
+// was injected (content filter disabled / not built), the route reports 404
+// so callers know the export is not available on this build.
+func (s *Server) serveContentFilterExport(c *gin.Context) {
+	if s == nil || s.contentFilterExportHandler == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	s.contentFilterExportHandler(c)
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
