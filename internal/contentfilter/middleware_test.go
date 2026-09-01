@@ -51,7 +51,7 @@ func TestMiddlewareInboundMasking(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
-		bytes.NewBufferString(`{"model":"gpt-5","messages":[{"content":"绝密文件 手机13800138000"}]}`))
+		bytes.NewBufferString(`{"model":"gpt-5","messages":[{"content":"绝密文件 手机13812345678"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer x")
 
@@ -67,7 +67,7 @@ func TestMiddlewareInboundMasking(t *testing.T) {
 	if strings.Contains(resp.Seen, "绝密文件") {
 		t.Fatalf("inbound sensitive word leaked through: %q", resp.Seen)
 	}
-	if strings.Contains(resp.Seen, "13800138000") {
+	if strings.Contains(resp.Seen, "13812345678") {
 		t.Fatalf("inbound phone leaked through: %q", resp.Seen)
 	}
 	if !strings.Contains(resp.Seen, "****") {
@@ -82,7 +82,7 @@ func TestMiddlewareOutboundMasking(t *testing.T) {
 
 	r.POST("/v1/chat/completions", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"content": "您的验证码手机 13800138000 请查收",
+			"content": "您的验证码手机 13812345678 请查收",
 		})
 	})
 
@@ -93,10 +93,10 @@ func TestMiddlewareOutboundMasking(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if strings.Contains(rec.Body.String(), "13800138000") {
+	if strings.Contains(rec.Body.String(), "13812345678") {
 		t.Fatalf("outbound phone leaked: %q", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "138****8000") {
+	if !strings.Contains(rec.Body.String(), "138****5678") {
 		t.Fatalf("outbound partial mask missing: %q", rec.Body.String())
 	}
 	t.Logf("outbound masked body: %s", rec.Body.String())
@@ -110,7 +110,7 @@ func TestMiddlewareSSEStreaming(t *testing.T) {
 		c.Header("Content-Type", "text/event-stream")
 		// Simulate a streaming upstream.
 		flusher, _ := c.Writer.(http.Flusher)
-		c.Writer.WriteString("data: {\"phone\":\"13800138000\"}\n\n")
+		c.Writer.WriteString("data: {\"phone\":\"13812345678\"}\n\n")
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -128,10 +128,10 @@ func TestMiddlewareSSEStreaming(t *testing.T) {
 	r.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
-	if strings.Contains(body, "13800138000") {
+	if strings.Contains(body, "13812345678") {
 		t.Fatalf("SSE stream phone leaked: %q", body)
 	}
-	if !strings.Contains(body, "138****8000") {
+	if !strings.Contains(body, "138****5678") {
 		t.Fatalf("SSE stream phone not masked: %q", body)
 	}
 	if !strings.Contains(body, "data: [DONE]") {
@@ -145,10 +145,10 @@ func TestMiddlewareSSEStreaming(t *testing.T) {
 func TestMiddlewareAuditEnqueueInbound(t *testing.T) {
 	sidecar := filepath.Join(t.TempDir(), "audit.db")
 	audit := NewAudit(AuditEnv{
-		HostDBPath:     "/nonexistent/does/not/exist",
-		SidecarPath:    sidecar,
-		QueueSize:      16,
-		WriteTimeout:   2 * time.Second,
+		HostDBPath:   "/nonexistent/does/not/exist",
+		SidecarPath:  sidecar,
+		QueueSize:    16,
+		WriteTimeout: 2 * time.Second,
 	})
 	audit.env.ContainerName = ""
 	defer audit.Close()
@@ -172,7 +172,7 @@ func TestMiddlewareAuditEnqueueInbound(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	var wr uint64
 	for time.Now().Before(deadline) {
-		_, _, w, _ := audit.Stats()
+		_, _, w, _, _ := audit.Stats()
 		if w >= 1 {
 			wr = w
 			break
@@ -180,7 +180,7 @@ func TestMiddlewareAuditEnqueueInbound(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if wr < 1 {
-		enq, drop, w, fail := audit.Stats()
+		enq, drop, w, fail, _ := audit.Stats()
 		t.Fatalf("audit row not written, stats enq=%d drop=%d wr=%d fail=%d", enq, drop, w, fail)
 	}
 

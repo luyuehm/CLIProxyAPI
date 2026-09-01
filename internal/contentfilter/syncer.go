@@ -2,7 +2,10 @@ package contentfilter
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,16 +38,10 @@ const (
 // be set; when docker mode is used, the DB file is copied out read-only on
 // every sync so KEEPER is never written to.
 type SyncerOptions struct {
-	// KEEPER app.db read from a host-visible path (mounted volume). When set,
-	// this path is opened directly in read-only mode.
-	HostDBPath string
-	// When set, the syncer reaches the KEEPER app.db inside the container via
-	// `docker cp` (read-only copy) instead of reading the host path.
-	ContainerName string
-	// ContainerDBPath is the in-container path of the SQLite database.
+	HostDBPath      string
+	ContainerName   string
 	ContainerDBPath string
-	// DockerCmd is the docker CLI binary (defaults to "docker").
-	DockerCmd string
+	DockerCmd       string
 	// RefreshInterval controls how often rules are reloaded.
 	RefreshInterval time.Duration
 	// dockerCopyTimeout bounds each docker cp invocation.
@@ -73,26 +70,28 @@ func (o *SyncerOptions) withDefaults() {
 // path and falls back to `docker cp` transparently.
 func DefaultSyncerOptions() SyncerOptions {
 	return SyncerOptions{
-		HostDBPath:       DefaultHostVolumeDBPath,
-		ContainerName:    DefaultContainerName,
-		ContainerDBPath:  DefaultContainerDBPath,
-		RefreshInterval:  DefaultInterval,
-		DockerCmd:        "docker",
+		HostDBPath:        DefaultHostVolumeDBPath,
+		ContainerName:     DefaultContainerName,
+		ContainerDBPath:   DefaultContainerDBPath,
+		RefreshInterval:   DefaultInterval,
+		DockerCmd:         "docker",
 		dockerCopyTimeout: DefaultDockerCopyTimeout,
 	}
 }
 
 // Syncer periodically reads KEEPER's content_filter_rules table into memory.
-// It loads rules on creation (or on the first successful poll) and then
-// re-polls every RefreshInterval, comparing a lightweight source fingerprint
-// (file mtime + size, or a checksum when mtime is unavailable) so rules only
-// get swapped when they actually changed. Failures are logged and keep the
-// last-known-good rule set.
+// RIC-440 (2026-08-31) tracks the loaded rule-set fingerprint so a Reload
+// that produces an identical set short-circuits and avoids an unnecessary
+// pointer-table swap.
 type Syncer struct {
 	opts SyncerOptions
 
 	mu     sync.RWMutex
 	active []*Rule
+
+	// activeHash is the SHA-256 of the JSON-marshalled active rules, used to
+	// skip no-op Reload calls. Empty when no rules are loaded yet.
+	activeHash string
 
 	stale atomic.Bool
 	stop  chan struct{}
@@ -160,8 +159,6 @@ func (s *Syncer) loop() {
 	}
 }
 
-// Called on fixed intervals. Sets a stale marker when a source becomes
-// unreachable so the middleware can react.
 func (s *Syncer) tick() {
 	if _, err := s.Reload(); err != nil {
 		logger.WithError(err).Warn("content filter sync failed")
@@ -186,21 +183,52 @@ func (s *Syncer) Rules() []*Rule {
 
 // Reload reads the current rules from KEEPER and atomically swaps them into
 // memory. It returns the number of rules loaded.
+//
+// RIC-440 (2026-08-31) diff-by-hash: if the new rule set hashes to the
+// same value as the active one, the swap is skipped.
 func (s *Syncer) Reload() (int, error) {
 	rules, err := s.loadRules()
 	if err != nil {
 		s.setStale(true)
 		return 0, err
 	}
+	newHash := hashRules(rules)
+	s.mu.RLock()
+	currentHash := s.activeHash
+	s.mu.RUnlock()
+	if newHash == currentHash {
+		s.setStale(false)
+		return len(rules), nil
+	}
 	s.mu.Lock()
 	s.active = rules
+	s.activeHash = newHash
 	s.mu.Unlock()
 	s.setStale(false)
+	logger.WithField("rules", len(rules)).Info("content filter: rules reloaded")
 	return len(rules), nil
 }
 
-// loadRules reads rules from the KEEPER database. Host mode opens the file
-// read-only directly; docker mode copies it out first.
+// hashRules returns a stable SHA-256 of the rule set. Order is the
+// priority-then-id order produced by readRulesFromDB so the hash is
+// deterministic for the same KEEPER snapshot.
+func hashRules(rules []*Rule) string {
+	if len(rules) == 0 {
+		return "empty"
+	}
+	h := sha256.New()
+	for _, r := range rules {
+		b, err := json.Marshal(r)
+		if err != nil {
+			h.Write([]byte(fmt.Sprintf("err:%d|", r.ID)))
+			continue
+		}
+		h.Write(b)
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 func (s *Syncer) loadRules() ([]*Rule, error) {
 	dbPath, cleanup, err := s.obtainDBPath()
 	if err != nil {
@@ -212,14 +240,11 @@ func (s *Syncer) loadRules() ([]*Rule, error) {
 	return readRulesFromDB(dbPath)
 }
 
-// obtainDBPath decides how to reach the KEEPER db and returns the local path
-// to read plus an optional cleanup func.
 func (s *Syncer) obtainDBPath() (path string, cleanup func(), err error) {
 	if s.opts.HostDBPath != "" {
 		if _, statErr := os.Stat(s.opts.HostDBPath); statErr == nil {
 			return s.opts.HostDBPath, nil, nil
 		}
-		// Host path missing: fall through to docker cp.
 	}
 	if s.opts.ContainerName != "" {
 		tmp, copyErr := s.copyDBViaDocker()
@@ -234,8 +259,6 @@ func (s *Syncer) obtainDBPath() (path string, cleanup func(), err error) {
 	return "", nil, fmt.Errorf("content filter: no KEEPER db source configured (host path or container)")
 }
 
-// copyDBViaDocker copies the KEEPER app.db to a temp file (read-only). It
-// never writes to the container.
 func (s *Syncer) copyDBViaDocker() (string, error) {
 	tmp, err := os.CreateTemp("", "keeper-app-db-*.db")
 	if err != nil {
@@ -259,6 +282,11 @@ func (s *Syncer) copyDBViaDocker() (string, error) {
 // readRulesFromDB opens the SQLite database read-only and loads all enabled
 // content filter rules, ordered by priority (then id) ascending so higher
 // priorities win when multiple rules touch the same text.
+//
+// RIC-440 (2026-08-31): if the KEEPER db has a content_filter_rule_meta
+// side-table keyed by rule_id, the new tuning fields (WhitelistMode /
+// ContextExcludes / MinMatchLen) are loaded from it. The side table is
+// optional; missing means default behaviour, which matches RIC-438.
 func readRulesFromDB(dbPath string) ([]*Rule, error) {
 	dsn := "file:" + filepath.ToSlash(dbPath) + "?mode=ro&_pragma=busy_timeout%3d5000"
 	db, err := sql.Open("sqlite", dsn)
@@ -267,11 +295,17 @@ func readRulesFromDB(dbPath string) ([]*Rule, error) {
 	}
 	defer db.Close()
 
-	// A read-only open can still fail later on permission; surface it here.
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("content filter: ping keeper db: %w", err)
 	}
+	return readRulesFromOpenDB(db)
+}
 
+// readRulesFromOpenDB loads all enabled rules from an already-open read-only
+// connection to the KEEPER database. RIC-443 uses it inside the export
+// handler: the handler already holds a read-only db handle (openExportSource),
+// so it can re-mask previews with the latest rules without a second poll loop.
+func readRulesFromOpenDB(db *sql.DB) ([]*Rule, error) {
 	rows, err := db.QueryContext(context.Background(),
 		`SELECT id, name, IFNULL(description, ''), COALESCE(enabled, 1), COALESCE(scenario, 'general'),
 		        COALESCE(action, 'mask'), IFNULL(sensitive_words, ''), IFNULL(pii_types, ''),
@@ -281,6 +315,8 @@ func readRulesFromDB(dbPath string) ([]*Rule, error) {
 		return nil, fmt.Errorf("content filter: query content_filter_rules: %w", err)
 	}
 	defer rows.Close()
+
+	metaByID := loadRuleMeta(db)
 
 	var rules []*Rule
 	for rows.Next() {
@@ -296,10 +332,49 @@ func readRulesFromDB(dbPath string) ([]*Rule, error) {
 		r.PIITypes = parsePIITypes(pii)
 		r.WhiteList = parseCSV(white)
 		r.Models = parseCSV(models)
+		if meta, ok := metaByID[r.ID]; ok {
+			r.WhitelistMode = WhitelistMode(meta.WhitelistMode)
+			r.ContextExcludes = parseCSV(meta.ContextExcludes)
+			if meta.MinMatchLen > 0 {
+				r.MinMatchLen = meta.MinMatchLen
+			}
+		}
 		rules = append(rules, &r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("content filter: iterate rules: %w", err)
 	}
 	return rules, nil
+}
+
+// ruleMeta carries optional RIC-440 tuning fields. Stored in a sibling table
+// so existing content_filter_rules rows do not need to be reimported.
+type ruleMeta struct {
+	WhitelistMode   string
+	ContextExcludes string
+	MinMatchLen     int
+}
+
+// loadRuleMeta reads the optional content_filter_rule_meta side-table. A
+// missing table yields an empty map (zero-cost default).
+func loadRuleMeta(db *sql.DB) map[int64]ruleMeta {
+	out := make(map[int64]ruleMeta)
+	rows, err := db.QueryContext(context.Background(),
+		`SELECT rule_id, IFNULL(whitelist_mode, ''), IFNULL(context_excludes, ''), COALESCE(min_match_len, 0)
+		   FROM content_filter_rule_meta`)
+	if err != nil {
+		// Table missing is the common case; quietly return empty.
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var m ruleMeta
+		if err := rows.Scan(&id, &m.WhitelistMode, &m.ContextExcludes, &m.MinMatchLen); err != nil {
+			logger.WithError(err).Debug("scan rule_meta row")
+			continue
+		}
+		out[id] = m
+	}
+	return out
 }

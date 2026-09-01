@@ -76,8 +76,14 @@ func TestLiveKeeperIntegration(t *testing.T) {
 }
 
 // TestLiveAuditWriteBack proves that the audit writer enqueues a row and the
-// row lands in KEEPER's content_filter_logs table via the docker-cp path. It
-// runs only when CPA_CONTENT_FILTER_LIVE_TEST=1.
+// row lands in KEEPER's content_filter_logs table via the legacy docker-cp
+// path (writeBatchViaDockerCPLegacy). It runs only when
+// CPA_CONTENT_FILTER_LIVE_TEST=1.
+//
+// RIC-442 提示: 这是 legacy 通道，仅为兼容旧部署/测试保留；新部署应让
+// CPA 通过 HTTP POST /api/v1/contentfilter/logs/ingest 向 KEEPER 投递
+// 审计行（KEEPER 进程以 app:app 写入自己的 app.db）。新通道的 live 测试
+// 由 TestLiveAuditHTTPWriteBack 覆盖。
 //
 // The test pulls a snapshot of the KEEPER db before, fires one inbound
 // sensitive-word hit through the audit writer, then pulls a snapshot after
@@ -93,12 +99,12 @@ func TestLiveAuditWriteBack(t *testing.T) {
 	t.Logf("KEEPER content_filter_logs rows before: %d", before)
 
 	audit := NewAudit(AuditEnv{
-		HostDBPath:     "", // not present on macOS
-		ContainerName:  container,
+		HostDBPath:      "", // not present on macOS
+		ContainerName:   container,
 		ContainerDBPath: dbPath,
-		DockerCmd:      "docker",
-		QueueSize:      16,
-		WriteTimeout:   10 * time.Second,
+		DockerCmd:       "docker",
+		QueueSize:       16,
+		WriteTimeout:    10 * time.Second,
 	})
 	defer audit.Close()
 

@@ -82,6 +82,10 @@ type Server struct {
 	// management handler
 	mgmt *managementHandlers.Handler
 
+	// contentFilterExportHandler is the RIC-443 audit export endpoint injected
+	// via WithContentFilterExportHandler. nil when content filter is disabled.
+	contentFilterExportHandler gin.HandlerFunc
+
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
@@ -182,6 +186,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		pluginHost:          optionState.pluginHost,
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
+		contentFilterExportHandler:   optionState.contentFilterExportHandler,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))

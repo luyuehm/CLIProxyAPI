@@ -297,6 +297,11 @@ func (b *Builder) Build() (*Service, error) {
 	if cfOpt := contentfilter.ServerOption(); cfOpt != nil {
 		service.serverOptions = append(service.serverOptions, cfOpt)
 	}
+	// RIC-443: KEEPER-facing audit export endpoint (GET
+	// /v0/management/contentfilter/export). Same enable switch as the filter.
+	if cfExportOpt := contentfilter.ExportServerOption(); cfExportOpt != nil {
+		service.serverOptions = append(service.serverOptions, cfExportOpt)
+	}
 	return service, nil
 }
 

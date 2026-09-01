@@ -27,6 +27,11 @@ type serverOptionConfig struct {
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
 	exampleAPIKeySafeMode bool
+	// contentFilterExportHandler is the RIC-443 audit export endpoint. It is
+	// injected by the contentfilter package (which cannot import this one —
+	// import cycle) and registered under /v0/management/contentfilter/export
+	// so it rides the same management-key auth as the other management routes.
+	contentFilterExportHandler gin.HandlerFunc
 }
 
 // ServerOption customises HTTP server construction.
@@ -56,6 +61,17 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 func WithMiddleware(mw ...gin.HandlerFunc) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.extraMiddleware = append(cfg.extraMiddleware, mw...)
+	}
+}
+
+// WithContentFilterExportHandler injects the RIC-443 audit export endpoint.
+// The handler lives in internal/contentfilter (which imports this package, so
+// the route handler cannot be constructed here); the contentfilter package
+// passes its handler through this option and the server registers it under
+// /v0/management/contentfilter/export.
+func WithContentFilterExportHandler(h gin.HandlerFunc) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.contentFilterExportHandler = h
 	}
 }
 

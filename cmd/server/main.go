@@ -91,6 +91,18 @@ func main() {
 	var standalone bool
 	var localModel bool
 
+	// RIC-440 (2026-08-31): content filter audit export.
+	var cfExport bool
+	var cfExportFormat string
+	var cfExportOut string
+	var cfExportSince string
+	var cfExportUntil string
+	var cfExportLimit int
+	var cfExportModel string
+	var cfExportUser string
+	var cfExportIP string
+	var cfExportDir string
+
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
 	flag.BoolVar(&codexDeviceLogin, "codex-device-login", false, "Login to Codex using device code flow")
@@ -109,6 +121,18 @@ func main() {
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
 	flag.BoolVar(&localModel, "local-model", false, "Use embedded models.json and codex_client_models.json only, skip remote model catalog fetching")
+
+	// RIC-440 (2026-08-31): content filter audit export.
+	flag.BoolVar(&cfExport, "contentfilter-export", false, "Export KEEPER content_filter_logs to a local file and exit (RIC-440)")
+	flag.StringVar(&cfExportFormat, "contentfilter-export-format", "csv", "Export format: csv|json|jsonl")
+	flag.StringVar(&cfExportOut, "contentfilter-export-out", "", "Export output file path (required when -contentfilter-export is set)")
+	flag.StringVar(&cfExportSince, "contentfilter-export-since", "", "Export created_at >= RFC3339 (e.g. 2026-08-01T00:00:00Z)")
+	flag.StringVar(&cfExportUntil, "contentfilter-export-until", "", "Export created_at < RFC3339")
+	flag.IntVar(&cfExportLimit, "contentfilter-export-limit", 0, "Cap on number of rows exported (0 = no cap)")
+	flag.StringVar(&cfExportModel, "contentfilter-export-model", "", "Filter by model (exact match)")
+	flag.StringVar(&cfExportUser, "contentfilter-export-user", "", "Filter by user_id (exact match)")
+	flag.StringVar(&cfExportIP, "contentfilter-export-ip", "", "Filter by client_ip (exact match)")
+	flag.StringVar(&cfExportDir, "contentfilter-export-filter-type", "", "Filter by filter_type: inbound|outbound")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -648,6 +672,35 @@ func main() {
 	if vertexImport != "" {
 		// Handle Vertex service account import
 		cmd.DoVertexImport(cfg, vertexImport, vertexImportPrefix)
+	} else if cfExport {
+		// RIC-440: content filter audit export.
+		opts := cmd.ContentFilterExportOptions{
+			Format:     cfExportFormat,
+			Out:        cfExportOut,
+			Limit:      cfExportLimit,
+			Model:      cfExportModel,
+			UserID:     cfExportUser,
+			ClientIP:   cfExportIP,
+			FilterType: cfExportDir,
+		}
+		if cfExportSince != "" {
+			t, err := time.Parse(time.RFC3339, cfExportSince)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid -contentfilter-export-since: %v\n", err)
+				os.Exit(2)
+			}
+			opts.Since = t
+		}
+		if cfExportUntil != "" {
+			t, err := time.Parse(time.RFC3339, cfExportUntil)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid -contentfilter-export-until: %v\n", err)
+				os.Exit(2)
+			}
+			opts.Until = t
+		}
+		cmd.DoContentFilterExport(opts)
+		return
 	} else if antigravityLogin {
 		// Handle Antigravity login
 		cmd.DoAntigravityLogin(cfg, options)
