@@ -1,10 +1,10 @@
 services:
   cli-proxy-api:
-    # RIC-442: pinned to the locally-built contentfilter image with the new
-    # HTTP-first audit writer. Using a direct tag (not an env var) so a stale
+    # RIC-457: pinned to the locally-built contentfilter image (NULL-column
+    # export fix + HTTP-first audit writer). Using a direct tag (not an env var) so a stale
     # CLI_PROXY_IMAGE in .env cannot pull the old remote image over this
     # deployment.
-    image: cli-proxy-api:deploy-ric442
+    image: cli-proxy-api:deploy-ric457
     pull_policy: never
     build:
       context: .
