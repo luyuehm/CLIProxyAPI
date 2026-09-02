@@ -254,7 +254,7 @@ func streamExportRows(w io.Writer, db *sql.DB, filter ExportFilter, format Expor
 			pageSize = remaining
 		}
 		rows, err := db.QueryContext(context.Background(),
-			"SELECT id, rule_id, IFNULL(rule_name,''), IFNULL(filter_type,''), match_count, IFNULL(matches,''), action, IFNULL(model,''), IFNULL(client_ip,''), IFNULL(user_id,''), IFNULL(raw_preview,''), IFNULL(filtered_preview,''), IFNULL(created_at,'') FROM content_filter_logs"+clause+" ORDER BY id ASC LIMIT ? OFFSET ?",
+			"SELECT id, IFNULL(rule_id,0), IFNULL(rule_name,''), IFNULL(filter_type,''), IFNULL(match_count,0), IFNULL(matches,''), IFNULL(action,''), IFNULL(model,''), IFNULL(client_ip,''), IFNULL(user_id,''), IFNULL(raw_preview,''), IFNULL(filtered_preview,''), IFNULL(created_at,'') FROM content_filter_logs"+clause+" ORDER BY id ASC LIMIT ? OFFSET ?",
 			append(args, pageSize, offset)...)
 		if err != nil {
 			return written, fmt.Errorf("contentfilter: export query: %w", err)
@@ -369,10 +369,9 @@ func newCSVWriter(out io.Writer) *csvWriter {
 
 func (c *csvWriter) Write(r ExportRecord) error {
 	if !c.once {
-		if err := c.w.Write(c.header); err != nil {
+		if err := c.writeHeader(); err != nil {
 			return err
 		}
-		c.once = true
 	}
 	row := []string{
 		fmtInt(r.ID), fmtInt(r.RuleID), r.RuleName, r.FilterType,
@@ -380,6 +379,17 @@ func (c *csvWriter) Write(r ExportRecord) error {
 		r.UserID, r.RawPreview, r.FilteredPreview, r.CreatedAt,
 	}
 	return c.w.Write(row)
+}
+
+// writeHeader emits the CSV header and marks the writer as initialised.
+// RIC-457: headers must be written before any data row so a mid-stream
+// row error still leaves a parseable (header-only) file instead of 0 bytes.
+func (c *csvWriter) writeHeader() error {
+	if err := c.w.Write(c.header); err != nil {
+		return err
+	}
+	c.once = true
+	return nil
 }
 
 func (c *csvWriter) Flush()       { c.w.Flush() }
