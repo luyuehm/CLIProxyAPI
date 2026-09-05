@@ -24,7 +24,7 @@ type LoginErrors = {
 
 interface LoginPageProps extends LoginErrors {
   loading?: boolean;
-  onPasswordSubmit: (password: string) => Promise<void>;
+  onPasswordSubmit: (password: string, rememberMe: boolean) => Promise<void>;
   onAPIKeySubmit: (apiKey: string) => Promise<void>;
 }
 
@@ -38,6 +38,7 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
   const setTheme = useThemeStore((state) => state.setTheme);
   const [mode, setMode] = useState<LoginMode>('admin');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const activeError = getLoginErrorForMode(mode, { adminError, apiKeyError });
   const themeOptions = useMemo(
@@ -51,7 +52,7 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
       await onAPIKeySubmit(apiKey);
       return;
     }
-    await onPasswordSubmit(password);
+    await onPasswordSubmit(password, rememberMe);
   };
 
   const canSubmit = mode === 'api_key' ? Boolean(apiKey.trim()) : Boolean(password.trim());
@@ -127,16 +128,28 @@ export function LoginPage({ loading = false, adminError = '', apiKeyError = '', 
                 disabled={loading}
               />
             ) : (
-              <Input
-                type="password"
-                autoComplete="current-password"
-                label={t('auth.password_label')}
-                placeholder={t('auth.password_placeholder')}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                error={activeError || undefined}
-                disabled={loading}
-              />
+              <>
+                <Input
+                  type="password"
+                  autoComplete="current-password"
+                  label={t('auth.password_label')}
+                  placeholder={t('auth.password_placeholder')}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  error={activeError || undefined}
+                  disabled={loading}
+                />
+                <label className={styles.rememberMeRow}>
+                  <input
+                    type="checkbox"
+                    className={styles.rememberMeInput}
+                    checked={rememberMe}
+                    onChange={(event) => setRememberMe(event.target.checked)}
+                    disabled={loading}
+                  />
+                  <span className={styles.rememberMeLabel}>{t('auth.remember_me')}</span>
+                </label>
+              </>
             )}
             <Button type="submit" fullWidth loading={loading} disabled={!canSubmit}>
               {mode === 'api_key' ? t('auth.api_key_login_submit') : t('auth.login_submit')}

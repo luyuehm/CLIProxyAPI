@@ -319,12 +319,17 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		Enabled:                         cfg.AuthEnabled,
 		LoginPassword:                   cfg.LoginPassword,
 		SessionTTL:                      cfg.AuthSessionTTL,
+		RememberMeTTL:                   cfg.AuthRememberMeTTL,
 		BasePath:                        cfg.AppBasePath,
 		FrameAncestorOrigins:            frameAncestorOrigins(cfg),
 		TrustedProxyCIDRs:               cfg.TrustedProxyCIDRs,
 		APIKeyViewerLocalRankingEnabled: cfg.APIKeyViewerLocalRankingEnabled,
 	}
 	authHandler := api.NewAuthHandler(authConfig, sessionManager)
+	if cfg.AuthEnabled {
+		// TOTP 双因子配置持久化到 app_settings，只有登录保护启用时才有意义。
+		authHandler.SetMFASecretStore(repository.NewMFASecretStore(db))
+	}
 
 	return &App{
 		Config: &cfg,

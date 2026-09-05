@@ -18,6 +18,7 @@ import (
 const (
 	sessionCookieName         = "cpa_usage_keeper_session"
 	embedSessionCookieName    = "cpa_usage_keeper_embed_session"
+	pendingMFACookieName      = "cpa_usage_keeper_pending_mfa"
 	authTokenContextKey       = "auth_token"
 	authSessionContextKey     = "auth_session"
 	authResolvedContextKey    = "auth_resolved_session"
@@ -41,6 +42,7 @@ type AuthConfig struct {
 	Enabled                         bool
 	LoginPassword                   string
 	SessionTTL                      time.Duration
+	RememberMeTTL                   time.Duration
 	BasePath                        string
 	FrameAncestorOrigins            []string
 	TrustedProxyCIDRs               []string
@@ -52,10 +54,24 @@ type authHandler struct {
 	sessions          *auth.SessionManager
 	cpaAPIKeyProvider service.CPAAPIKeyProvider
 	loginAttempts     *auth.LoginAttemptLimiter
+	mfaStore          MFASecretStore
+}
+
+func (h *authHandler) setMFASecretStore(store MFASecretStore) {
+	if h != nil {
+		h.mfaStore = store
+	}
+}
+
+// SetMFASecretStore 注入 TOTP 密钥持久化实现（生产由 app 装配，测试可直接注入内存实现）。
+func (h *authHandler) SetMFASecretStore(store MFASecretStore) {
+	h.setMFASecretStore(store)
 }
 
 type loginRequest struct {
 	Password string `json:"password"`
+	// RememberMe 为 true 时签发长有效期持久会话 Cookie（仅标准管理登录）。
+	RememberMe bool `json:"rememberMe"`
 }
 
 type apiKeyLoginRequest struct {
@@ -76,6 +92,10 @@ type sessionAPIKeyResponse struct {
 
 type loginResponse struct {
 	SessionToken string `json:"session_token,omitempty"`
+	// RequiresMFA 为 true 表示密码已通过、但管理员开启了 TOTP 双因子认证，需要二次验证。
+	RequiresMFA bool `json:"requires_mfa,omitempty"`
+	// MFAAccount 用于前端在弹窗标题里展示正在验证的账号。
+	MFAAccount string `json:"mfa_account,omitempty"`
 }
 
 type sessionCookieKind string
@@ -121,6 +141,9 @@ func (h *authHandler) setCPAAPIKeyProvider(provider service.CPAAPIKeyProvider) {
 func (h *authHandler) registerRoutes(router gin.IRoutes) {
 	router.GET("/session", h.getSession)
 	router.POST("/login", h.login)
+	router.GET("/mfa/setup", h.mfaSetup)
+	router.POST("/mfa/enable", h.mfaEnable)
+	router.POST("/mfa/verify", h.mfaVerify)
 	router.POST("/api-key-login", h.apiKeyLogin)
 	router.POST("/logout", h.logout)
 }
@@ -303,7 +326,13 @@ func (h *authHandler) login(c *gin.Context) {
 	h.loginAttempts.Reset(clientKey)
 
 	resolved := resolveSessionToken(c)
-	token, expiresAt, err := h.sessions.CreateWithSourceAndMetadata(resolved.Source, sessionClientMetadata(c))
+	if mfaConfig, ok := h.loadTOTPConfig(c); ok && mfaConfig.Enabled {
+		writePendingMFACookie(c, h.config.BasePath, resolved.CookieKind, request.RememberMe)
+		c.JSON(http.StatusOK, loginResponse{RequiresMFA: true, MFAAccount: auth.TOTPDefaultAccount})
+		return
+	}
+
+	token, expiresAt, err := h.createAdminSession(c, resolved, request.RememberMe)
 	if err != nil {
 		writeInternalError(c, "create auth session failed", err)
 		return
@@ -311,6 +340,15 @@ func (h *authHandler) login(c *gin.Context) {
 
 	setSessionCookie(c, h.config.BasePath, resolved.CookieKind, token, expiresAt)
 	writeLoginSuccess(c, resolved, token)
+}
+
+// createAdminSession 创建管理员会话；Remember Me 时使用配置的持久 TTL。
+func (h *authHandler) createAdminSession(c *gin.Context, resolved resolvedSessionToken, rememberMe bool) (string, time.Time, error) {
+	metadata := sessionClientMetadata(c)
+	if !rememberMe || h.config.RememberMeTTL <= 0 {
+		return h.sessions.CreateWithSourceAndMetadata(resolved.Source, metadata)
+	}
+	return h.sessions.CreateRememberedWithSourceAndMetadata(resolved.Source, metadata, h.config.RememberMeTTL)
 }
 
 func (h *authHandler) apiKeyLogin(c *gin.Context) {
@@ -379,6 +417,7 @@ func (h *authHandler) logout(c *gin.Context) {
 		h.deleteSession(resolved.Token)
 	}
 	clearSessionCookie(c, h.config.BasePath, resolved.CookieKind)
+	clearPendingMFACookie(c, h.config.BasePath, resolved.CookieKind)
 	c.Status(http.StatusNoContent)
 }
 
@@ -499,6 +538,47 @@ func setSessionCookie(c *gin.Context, basePath string, kind sessionCookieKind, t
 	cookie.Expires = expiresAt
 	cookie.MaxAge = int(time.Until(expiresAt).Seconds())
 	http.SetCookie(c.Writer, cookie)
+}
+
+// pendingMFACookieValue 编码密码阶段是否勾选 Remember Me，供二次验证后沿用。
+func pendingMFACookieValue(rememberMe bool) string {
+	if rememberMe {
+		return "rm=1"
+	}
+	return "1"
+}
+
+// rememberMePendingMarker 从待验证 Cookie 值还原 Remember Me 意图。
+func rememberMePendingMarker(value string) bool {
+	return value == "rm=1"
+}
+
+// writePendingMFACookie 在密码通过但需要 2FA 时放置一个短命 HttpOnly 标记 Cookie，
+// 用于在 mfa/verify 中确定待验证的登录（只有持有该 Cookie 才能提交动态码）。
+func writePendingMFACookie(c *gin.Context, basePath string, kind sessionCookieKind, rememberMe bool) {
+	cookie := sessionCookie(basePath, kind)
+	if kind == sessionCookieKindStandard {
+		cookie.Secure = c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https"
+	}
+	cookie.Name = pendingMFACookieName
+	cookie.Value = pendingMFACookieValue(rememberMe)
+	cookie.MaxAge = int(mfaPendingCookieTTL.Seconds())
+	cookie.Expires = time.Now().Add(mfaPendingCookieTTL)
+	http.SetCookie(c.Writer, cookie)
+}
+
+func clearPendingMFACookie(c *gin.Context, basePath string, kind sessionCookieKind) {
+	cookie := sessionCookie(basePath, kind)
+	cookie.Name = pendingMFACookieName
+	cookie.Value = ""
+	cookie.Expires = time.Unix(0, 0)
+	cookie.MaxAge = -1
+	http.SetCookie(c.Writer, cookie)
+}
+
+func hasPendingMFACookie(c *gin.Context) bool {
+	value, _ := c.Cookie(pendingMFACookieName)
+	return value != ""
 }
 
 func sessionCookiePath(basePath string) string {

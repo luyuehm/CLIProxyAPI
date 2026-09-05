@@ -21,6 +21,7 @@ import {
   ApiKeySettingsCard,
   SessionSettingsCard,
   PriceSettingsCard,
+  MFASettingsCard,
   AuthFileCredentialsSection,
   AiProviderCredentialsSection,
   CredentialDetailDrawer,
@@ -2330,6 +2331,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onSaveAlias={handleSaveApiKeyAlias}
                   onNotice={showTopNotice}
                 />
+                <MFASettingsCard onNotice={showTopNotice} onAuthRequired={onAuthRequired} />
                 <PriceSettingsCard
                   modelNames={modelNames}
                   modelPrices={modelPrices}

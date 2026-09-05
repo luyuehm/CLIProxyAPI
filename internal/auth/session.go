@@ -313,6 +313,15 @@ func (m *SessionManager) CreateWithSourceAndMetadata(source SessionSource, metad
 	return m.create(Session{Role: RoleAdmin, Source: NormalizeSessionSource(source)}, metadata)
 }
 
+// CreateRememberedWithSourceAndMetadata 创建 Remember Me 持久会话，使用显式 ttl
+// 而非管理器默认 TTL，用于签发长期有效 Cookie。
+func (m *SessionManager) CreateRememberedWithSourceAndMetadata(source SessionSource, metadata SessionClientMetadata, ttl time.Duration) (string, time.Time, error) {
+	if ttl <= 0 {
+		return m.CreateWithSourceAndMetadata(source, metadata)
+	}
+	return m.createWithTTL(Session{Role: RoleAdmin, Source: NormalizeSessionSource(source)}, metadata, ttl)
+}
+
 func (m *SessionManager) CreateAPIKeyViewer(cpaAPIKeyID int64) (string, time.Time, error) {
 	return m.CreateAPIKeyViewerWithSource(cpaAPIKeyID, SessionSourceStandard)
 }
@@ -326,6 +335,10 @@ func (m *SessionManager) CreateAPIKeyViewerWithSourceAndMetadata(cpaAPIKeyID int
 }
 
 func (m *SessionManager) create(session Session, metadata SessionClientMetadata) (string, time.Time, error) {
+	return m.createWithTTL(session, metadata, m.ttl)
+}
+
+func (m *SessionManager) createWithTTL(session Session, metadata SessionClientMetadata, ttl time.Duration) (string, time.Time, error) {
 	token, err := m.generate()
 	if err != nil {
 		return "", time.Time{}, err
@@ -336,7 +349,7 @@ func (m *SessionManager) create(session Session, metadata SessionClientMetadata)
 
 	m.cleanupExpiredLocked()
 	now := m.now()
-	expiresAt := now.Add(m.ttl)
+	expiresAt := now.Add(ttl)
 	metadata = normalizeSessionClientMetadata(metadata)
 	session.Source = NormalizeSessionSource(session.Source)
 	session.LoginIP = metadata.IP

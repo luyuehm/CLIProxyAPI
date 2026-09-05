@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import './index.css';
 import './App.css';
 import './embed/cpamcEmbed.css';
-import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey } from './lib/api';
+import { ApiError, appPath, clearEmbedSessionToken, getSession, login, loginWithCPAAPIKey, verifyMFA } from './lib/api';
 import type { AuthRole, AuthSessionAPIKeySummary } from './lib/types';
 import { AppFooter } from './components/AppFooter';
+import { Button } from './components/ui/Button';
+import { Input } from './components/ui/Input';
+import { Modal } from './components/ui/Modal';
 import { isKeyViewerPath, type KeyViewerPath } from './features/key-viewer';
 import { KeyAnalysisPage } from './pages/KeyAnalysisPage';
 import { KeyOverviewPage } from './pages/KeyOverviewPage';
@@ -58,6 +61,12 @@ function App() {
   const [adminLoginError, setAdminLoginError] = useState('');
   const [apiKeyLoginError, setAPIKeyLoginError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // TOTP 2FA 二次验证弹窗状态。
+  const [mfaChallengeOpen, setMFAChallengeOpen] = useState(false);
+  const [mfaCode, setMFACode] = useState('');
+  const [mfaError, setMFAError] = useState('');
+  const [mfaVerifying, setMFAVerifying] = useState(false);
+  const mfaAccountRef = useRef('admin');
   const clearUsageStats = useUsageStatsStore((state) => state.clearUsageStats);
   const isEmbeddedInCPAMC = isCPAMCEmbed();
 
@@ -106,11 +115,20 @@ function App() {
     window.history.replaceState(null, '', appPath(targetPath) + cpamcEmbedSearch());
   }, [authRole, authState, isEmbeddedInCPAMC]);
 
-  const handlePasswordLogin = useCallback(async (password: string) => {
+  const handlePasswordLogin = useCallback(async (password: string, rememberMe = false) => {
     setSubmitting(true);
     setAdminLoginError('');
+    setMFAError('');
     try {
-      await login(password);
+      const result = await login(password, rememberMe);
+      if (result.requiresMFA) {
+        // 密码已通过，弹出 Authenticator 动态码输入。
+        mfaAccountRef.current = result.mfaAccount || 'admin';
+        setMFACode('');
+        setMFAChallengeOpen(true);
+        setSubmitting(false);
+        return;
+      }
       const session = await loadSession();
       if (!session.authenticated) {
         setAdminLoginError(t('auth.login_failed'));
@@ -161,6 +179,36 @@ function App() {
     }
   }, [clearSession, isEmbeddedInCPAMC, loadSession, t]);
 
+  const handleMFAVerify = useCallback(async () => {
+    const code = mfaCode.trim();
+    if (!code || mfaVerifying) return;
+    setMFAVerifying(true);
+    setMFAError('');
+    try {
+      await verifyMFA(code);
+      const session = await loadSession();
+      if (!session.authenticated) {
+        setMFAError(t('auth.mfa_failed'));
+        setMFAChallengeOpen(false);
+        clearSession();
+        return;
+      }
+      setMFAChallengeOpen(false);
+      setMFACode('');
+      const currentPath = stripAppBasePath(window.location.pathname, window.__APP_BASE_PATH__) ?? '/';
+      const targetPath = getRoleTargetPath(session.role ?? 'admin', currentPath, isEmbeddedInCPAMC);
+      window.history.replaceState(null, '', appPath(targetPath) + cpamcEmbedSearch());
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setMFAError(t('auth.mfa_invalid_code'));
+      } else {
+        setMFAError(t('auth.mfa_failed'));
+      }
+    } finally {
+      setMFAVerifying(false);
+    }
+  }, [clearSession, isEmbeddedInCPAMC, loadSession, mfaCode, mfaVerifying, t]);
+
   const handleKeyViewerNavigate = useCallback((path: KeyViewerPath) => {
     if (path === keyViewerPath) return;
     window.history.replaceState(null, '', appPath(path) + cpamcEmbedSearch());
@@ -186,6 +234,68 @@ function App() {
     <div className="app-frame" data-embed={isEmbeddedInCPAMC ? 'cpamc' : undefined}>
       <main className="app-main">{page}</main>
       <AppFooter loadVersion={authState === 'authenticated'} />
+      <Modal
+        open={mfaChallengeOpen}
+        title={t('auth.mfa_challenge_title')}
+        onClose={() => {
+          if (mfaVerifying) return;
+          setMFAChallengeOpen(false);
+          setMFAError('');
+          clearSession();
+        }}
+        closeDisabled={mfaVerifying}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="secondary"
+              appearance="action"
+              onClick={() => {
+                if (mfaVerifying) return;
+                setMFAChallengeOpen(false);
+                setMFAError('');
+                clearSession();
+              }}
+              disabled={mfaVerifying}
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              type="button"
+              appearance="action"
+              loading={mfaVerifying}
+              disabled={!mfaCode.trim()}
+              onClick={() => void handleMFAVerify()}
+            >
+              {t('auth.mfa_verify')}
+            </Button>
+          </>
+        }
+      >
+        <p className="mfa-challenge-subtitle">
+          {t('auth.mfa_challenge_subtitle')} {mfaAccountRef.current}
+        </p>
+        <form
+          className="mfa-challenge-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleMFAVerify();
+          }}
+        >
+          <Input
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            label={t('auth.mfa_code_label')}
+            placeholder={t('auth.mfa_code_placeholder')}
+            value={mfaCode}
+            onChange={(event) => setMFACode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            error={mfaError || undefined}
+            disabled={mfaVerifying}
+            autoFocus
+          />
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, deleteAuthFiles, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCodexQuotaHistory, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyAnalysis, fetchKeyAnalysisLatency, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, startUsageQuotaInspection, updateAuthSessionAlias, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
+import { ApiError, appPath, createUsageEventRequestLogDownloadURL, deleteAuthFiles, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCodexQuotaHistory, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyAnalysis, fetchKeyAnalysisLatency, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, login, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, startUsageQuotaInspection, updateAuthSessionAlias, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
 
 const headerValue = (init: RequestInit | undefined, name: string): string | null => new Headers(init?.headers).get(name);
 
@@ -40,6 +40,34 @@ describe('fetchUsageEvents', () => {
     expect(init).toMatchObject({ credentials: 'include', method: 'POST' });
     expect(headerValue(init, 'Content-Type')).toBe('application/json');
     expect(init?.body).toBe(JSON.stringify({ apiKey: 'sk-cpa-viewer' }));
+  });
+
+  it('sends the Remember Me flag on password login', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    } as Response);
+
+    const result = await login('secret', true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(new URL(String(url), 'http://localhost').pathname).toBe('/api/v1/auth/login');
+    expect(init?.body).toBe(JSON.stringify({ password: 'secret', rememberMe: true }));
+    expect(result).toEqual({ requiresMFA: false });
+  });
+
+  it('surfaces a TOTP MFA challenge from the login response', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ requires_mfa: true, mfa_account: 'admin' }),
+    } as Response);
+
+    const result = await login('secret');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ requiresMFA: true, mfaAccount: 'admin' });
   });
 
   it('loads key overview with only the viewer range query', async () => {

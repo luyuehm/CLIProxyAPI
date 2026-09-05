@@ -174,7 +174,7 @@ describe('apiPath CPAMC embed behavior', () => {
       .mockResolvedValueOnce(jsonResponse({ authenticated: false }))
       .mockResolvedValueOnce(jsonResponse({ authenticated: false }));
 
-    await expect(login('secret')).resolves.toBeUndefined();
+    await expect(login('secret')).resolves.toEqual({ requiresMFA: false });
     await expect(getSession()).resolves.toMatchObject({ authenticated: false });
 
     expect(fetchMock).toHaveBeenCalledTimes(3);

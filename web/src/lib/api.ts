@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CodexQuotaHistoryResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type ErrorEventsResponse, type MFASetupResponse, type MFAVerifyResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -226,7 +226,25 @@ async function activateEmbedSessionFallback(response: Response): Promise<void> {
   }
 }
 
-export async function login(password: string): Promise<void> {
+export interface LoginResult {
+  requiresMFA: boolean
+  mfaAccount?: string
+}
+
+async function readLoginResult(response: Response): Promise<LoginResult> {
+  if (!response.ok) return { requiresMFA: false }
+  try {
+    const payload = await response.json() as { requires_mfa?: boolean; mfa_account?: string }
+    return {
+      requiresMFA: Boolean(payload.requires_mfa),
+      mfaAccount: payload.mfa_account || undefined,
+    }
+  } catch {
+    return { requiresMFA: false }
+  }
+}
+
+export async function login(password: string, rememberMe = false): Promise<LoginResult> {
   if (isCPAMCEmbed()) {
     clearEmbedSessionToken()
   }
@@ -235,12 +253,59 @@ export async function login(password: string): Promise<void> {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, rememberMe }),
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to login: ${response.status}`)
   }
-  await activateEmbedSessionFallback(response)
+  const result = await readLoginResult(response)
+  if (!result.requiresMFA) {
+    await activateEmbedSessionFallback(response)
+  }
+  return result
+}
+
+export async function verifyMFA(code: string): Promise<MFAVerifyResponse> {
+  const response = await apiFetch(apiPath('/auth/mfa/verify'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ code }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to verify MFA: ${response.status}`)
+  }
+  const payload = await response.json() as MFAVerifyResponse
+  if (isCPAMCEmbed() && payload.authenticated && payload.session_token) {
+    // 只有前端确认会话已认证时才写入 embed fallback token，避免误存失效会话。
+    const session = await getSession()
+    if (session.authenticated) {
+      storeEmbedSessionToken(payload.session_token)
+    }
+  }
+  return payload
+}
+
+export async function fetchMFASetup(signal?: AbortSignal): Promise<MFASetupResponse> {
+  const response = await apiFetch(apiPath('/auth/mfa/setup'), { signal, cache: 'no-store' })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load MFA setup: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function enableMFA(secret: string, code: string): Promise<void> {
+  const response = await apiFetch(apiPath('/auth/mfa/enable'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ secret, code }),
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to enable MFA: ${response.status}`)
+  }
 }
 
 export async function loginWithCPAAPIKey(apiKey: string): Promise<void> {

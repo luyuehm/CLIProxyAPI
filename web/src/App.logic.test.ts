@@ -30,6 +30,13 @@ describe('App role route normalization', () => {
     expect(appSource).toMatch(/<div className="app-frame"[^>]*>[\s\S]*<main className="app-main">\{page\}<\/main>[\s\S]*<AppFooter loadVersion=\{authState === 'authenticated'\} \/>[\s\S]*<\/div>/);
   });
 
+  it('renders an MFA challenge modal and verifies the code through the API', () => {
+    expect(appSource).toContain("verifyMFA");
+    expect(appSource).toContain("mfa_challenge_title");
+    expect(appSource).toMatch(/handleMFAVerify/);
+    expect(appSource).toMatch(/onPasswordSubmit=\{handlePasswordLogin\}/);
+  });
+
   it('lets app pages fill the space above the shared footer', () => {
     expect(appStylesSource).toMatch(/\.app-main\s*\{[\s\S]*?display:\s*flex;/);
     expect(appStylesSource).toMatch(/\.app-main\s*\{[\s\S]*?flex-direction:\s*column;/);

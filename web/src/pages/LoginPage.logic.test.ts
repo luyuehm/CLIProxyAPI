@@ -23,6 +23,12 @@ describe('LoginPage mode-specific errors', () => {
     expect(source).not.toContain('capability_persistence');
   });
 
+  it('offers a Remember Me checkbox for the admin password login', () => {
+    expect(source).toContain('rememberMe');
+    expect(source).toContain('onPasswordSubmit(password, rememberMe)');
+    expect(source).toMatch(/type="checkbox"/);
+  });
+
   it('fills the app main area instead of adding a second viewport height', () => {
     expect(stylesSource).toMatch(/\.pageShell\s*\{[\s\S]*?flex:\s*1\s+1\s+auto;/);
     expect(stylesSource).toMatch(/\.pageShell\s*\{[\s\S]*?min-height:\s*0;/);

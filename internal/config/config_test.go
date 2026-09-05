@@ -138,6 +138,9 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	if cfg.AuthSessionTTL != 7*24*time.Hour {
 		t.Fatalf("expected default auth session ttl 168h, got %s", cfg.AuthSessionTTL)
 	}
+	if cfg.AuthRememberMeTTL != 30*24*time.Hour {
+		t.Fatalf("expected default auth remember me ttl 720h, got %s", cfg.AuthRememberMeTTL)
+	}
 	if cfg.TLSSkipVerify {
 		t.Fatal("expected TLS skip verify to be disabled by default")
 	}
@@ -449,6 +452,7 @@ func TestLoadFromEnvParsesOverrides(t *testing.T) {
 	t.Setenv("AUTH_ENABLED", "true")
 	t.Setenv("LOGIN_PASSWORD", "top-secret")
 	t.Setenv("AUTH_SESSION_TTL", "12h")
+	t.Setenv("AUTH_REMEMBER_ME_TTL", "96h")
 	t.Setenv("REDIS_QUEUE_IDLE_INTERVAL", "2s")
 	t.Setenv("TLS_SKIP_VERIFY", "true")
 	t.Setenv("REDIS_QUEUE_TLS", "true")
@@ -465,7 +469,7 @@ func TestLoadFromEnvParsesOverrides(t *testing.T) {
 	if !cfg.RedisQueueTLS {
 		t.Fatal("expected redis queue TLS to be enabled when set to true")
 	}
-	if cfg.AppPort != "9090" || cfg.AppBasePath != "/cpa" || cfg.CPAPublicURL != "https://cpa.public.example.com/" || cfg.WorkDir != "/tmp/work" || cfg.SQLitePath != filepath.Join("/tmp/work", "app.db") || cfg.BackupEnabled || cfg.BackupDir != filepath.Join("/tmp/work", "backups") || cfg.BackupInterval != 2*time.Hour || cfg.BackupRetentionDays != 7 || cfg.RequestTimeout != 15*time.Second || cfg.LogLevel != "debug" || cfg.LogFileEnabled || cfg.LogDir != filepath.Join("/tmp/work", "logs") || cfg.LogRetentionDays != 14 || !cfg.AuthEnabled || cfg.LoginPassword != "top-secret" || cfg.AuthSessionTTL != 12*time.Hour || cfg.RedisQueueIdleInterval != 2*time.Second || cfg.QuotaRefreshWorkerLimit != 8 {
+	if cfg.AppPort != "9090" || cfg.AppBasePath != "/cpa" || cfg.CPAPublicURL != "https://cpa.public.example.com/" || cfg.WorkDir != "/tmp/work" || cfg.SQLitePath != filepath.Join("/tmp/work", "app.db") || cfg.BackupEnabled || cfg.BackupDir != filepath.Join("/tmp/work", "backups") || cfg.BackupInterval != 2*time.Hour || cfg.BackupRetentionDays != 7 || cfg.RequestTimeout != 15*time.Second || cfg.LogLevel != "debug" || cfg.LogFileEnabled || cfg.LogDir != filepath.Join("/tmp/work", "logs") || cfg.LogRetentionDays != 14 || !cfg.AuthEnabled || cfg.LoginPassword != "top-secret" || cfg.AuthSessionTTL != 12*time.Hour || cfg.AuthRememberMeTTL != 96*time.Hour || cfg.RedisQueueIdleInterval != 2*time.Second || cfg.QuotaRefreshWorkerLimit != 8 {
 		t.Fatalf("unexpected config override result: %+v", cfg)
 	}
 }

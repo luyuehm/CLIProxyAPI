@@ -12,6 +12,18 @@ export interface AuthSessionResponse {
   api_key?: AuthSessionAPIKeySummary
 }
 
+export interface MFASetupResponse {
+  secret: string
+  otp_url: string
+  label?: string
+  expires_in?: number
+}
+
+export interface MFAVerifyResponse {
+  authenticated: boolean
+  session_token?: string
+}
+
 export type AuthManagedSessionKind = 'admin' | 'api_key'
 export type AuthManagedSessionSource = 'standard' | 'embed'
 

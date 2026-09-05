@@ -103,6 +103,8 @@ type Config struct {
 	LoginPassword string
 	// AuthSessionTTL 是登录 session 有效时长。
 	AuthSessionTTL time.Duration
+	// AuthRememberMeTTL 是 Remember Me 持久会话的有效时长；0 表示不启用该功能。
+	AuthRememberMeTTL time.Duration
 }
 
 type LoadOptions struct {
@@ -214,6 +216,15 @@ func Load(options LoadOptions) (*Config, error) {
 		return nil, fmt.Errorf("AUTH_SESSION_TTL must be positive")
 	}
 
+	// 未显式设置时，Remember Me 持久会话默认 30 天；设为 0 可关闭该功能。
+	authRememberMeTTL, err := getDuration("AUTH_REMEMBER_ME_TTL", 30*24*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	if authRememberMeTTL < 0 {
+		return nil, fmt.Errorf("AUTH_REMEMBER_ME_TTL must be non-negative")
+	}
+
 	authEnabledValue := strings.TrimSpace(os.Getenv("AUTH_ENABLED"))
 	authEnabled, err := getBool("AUTH_ENABLED", true)
 	if err != nil {
@@ -288,6 +299,7 @@ func Load(options LoadOptions) (*Config, error) {
 		AuthEnabled:                     authEnabled,
 		LoginPassword:                   strings.TrimSpace(os.Getenv("LOGIN_PASSWORD")),
 		AuthSessionTTL:                  authSessionTTL,
+		AuthRememberMeTTL:               authRememberMeTTL,
 	}
 	if appHost := strings.TrimSpace(options.AppHost); appHost != "" {
 		cfg.AppHost = appHost
