@@ -651,6 +651,10 @@ func writeUsageEventsCSVExport(c *gin.Context, stream usageEventStreamFunc, reso
 		c.Header("Content-Disposition", `attachment; filename="`+usageEventsExportFilename("csv")+`"`)
 		c.Header("Content-Type", "text/csv; charset=utf-8")
 		c.Status(http.StatusOK)
+		// UTF-8 BOM makes Excel / WPS detect the file as UTF-8, avoiding garbled Chinese content.
+		if _, err := c.Writer.Write(helper.CSVUTF8BOM); err != nil {
+			return err
+		}
 		writer = csv.NewWriter(c.Writer)
 		if err := writer.Write(usageEventsExportCSVHeader); err != nil {
 			return err
