@@ -32,6 +32,20 @@ func newTestMiddleware(t *testing.T, words []string, pii []PIIType) (*Middleware
 	return mw, rules
 }
 
+// newTestMiddlewareInvalidLicense builds a middleware whose license probe is
+// hard-failed, simulating RIC-476 degradation.
+func newTestMiddlewareInvalidLicense(t *testing.T) *Middleware {
+	t.Helper()
+	engine := NewEngine(true)
+	p := NewLicenseProbe("http://127.0.0.1:1", "k") // unreachable → never valid
+	p.updateState(false, licenseStatusView{Enabled: true, Status: "expired", Mode: "block"})
+	return &Middleware{
+		syncer:  &Syncer{},
+		engine:  engine,
+		license: p,
+	}
+}
+
 func ginTestEngine(t *testing.T, mw *Middleware) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -208,4 +222,68 @@ func TestMiddlewareAuditEnqueueInbound(t *testing.T) {
 		t.Fatalf("client_ip should be set, got empty")
 	}
 	t.Logf("audit row: rid=%d name=%q ftype=%q raw=%q ip=%q", rid, rname, ftype, raw, ip)
+}
+
+// TestMiddlewareDegradesWhenLicenseInvalid asserts RIC-476 degradation: with
+// an invalid KEEPER license the content filter passes the request through
+// untouched (no masking) and stamps X-License-Status: blocked, instead of
+// silently dropping the enterprise protection.
+func TestMiddlewareDegradesWhenLicenseInvalid(t *testing.T) {
+	mw := newTestMiddlewareInvalidLicense(t)
+	r := ginTestEngine(t, mw)
+
+	r.POST("/v1/chat/completions", func(c *gin.Context) {
+		body, _ := c.GetRawData()
+		c.JSON(http.StatusOK, gin.H{"seen": string(body)})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"gpt-5","messages":[{"content":"绝密文件 手机13812345678"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer x")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-License-Status") != "blocked" {
+		t.Fatalf("expected X-License-Status blocked, got %q", rec.Header().Get("X-License-Status"))
+	}
+	// Degraded: the raw sensitive body must pass through unmasked.
+	if !strings.Contains(rec.Body.String(), "绝密文件") || !strings.Contains(rec.Body.String(), "13812345678") {
+		t.Fatalf("expected unmasked passthrough under degraded license, got %s", rec.Body.String())
+	}
+}
+
+// TestMiddlewareDoesNotDegradeWithNilLicense is the backward-compat guard: a
+// nil probe (no KEEPER license configured) must keep filtering active so the
+// pre-RIC-476 default (mask) is preserved.
+func TestMiddlewareDoesNotDegradeWithNilLicense(t *testing.T) {
+	mw, _ := newTestMiddleware(t, []string{"绝密文件"}, []PIIType{PIIPhone})
+	mw.license = nil // force open
+	r := ginTestEngine(t, mw)
+
+	r.POST("/v1/chat/completions", func(c *gin.Context) {
+		body, _ := c.GetRawData()
+		c.JSON(http.StatusOK, gin.H{"seen": string(body)})
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"gpt-5","messages":[{"content":"绝密文件 手机13812345678"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer x")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Header().Get("X-License-Status") == "blocked" {
+		t.Fatal("nil license probe must not block")
+	}
+	// Inbound masking is full (not partial): the raw phone must not appear and
+	// the masked placeholder must.
+	if strings.Contains(rec.Body.String(), "13812345678") {
+		t.Fatalf("nil license probe must not disable masking, got raw phone in %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "****") {
+		t.Fatalf("expected masking under nil license probe, got %s", rec.Body.String())
+	}
 }

@@ -32,6 +32,13 @@ type Middleware struct {
 	engine *Engine
 	audit  *Audit
 
+	// license is the optional RIC-476 probe of KEEPER license health. When set
+	// and the license is not valid, content filtering is explicitly degraded:
+	// requests pass through untouched and the response carries
+	// X-License-Status: blocked so downstream/monitoring can observe it,
+	// instead of silently dropping the enterprise protection.
+	license *LicenseProbe
+
 	// currentCtx is set per request by Handler() and read by enqueueOutboundAudit
 	// when the response writer finalizes the outbound body. Using a per-mw
 	// pointer keeps Handler()'s closure simple and the audit path branchless.
@@ -39,14 +46,27 @@ type Middleware struct {
 }
 
 // NewMiddleware creates a content filter middleware backed by the given
-// syncer and engine. Pass nil for audit to disable audit writes.
+// syncer and engine. Pass nil for audit to disable audit writes. The
+// middleware shares the package-level RIC-476 license probe (built from
+// env; nil when no KEEPER control plane is configured, which preserves
+// current open behavior). Tests constructing &Middleware{} directly leave
+// license nil unless they set it explicitly.
 func NewMiddleware(syncer *Syncer, engine *Engine, audit *Audit) *Middleware {
-	return &Middleware{syncer: syncer, engine: engine, audit: audit}
+	return &Middleware{syncer: syncer, engine: engine, audit: audit, license: sharedLicenseProbe()}
 }
 
 // Handler returns a Gin middleware handler.
 func (m *Middleware) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// RIC-476: license 联动探测失败时显式降级 —— 放行请求但标注 blocked，
+		// 不再静默运行企业内容过滤(规则仍载入但被跳过，避免漏脱敏而不自知)。
+		if m.license != nil && !m.license.Valid() {
+			c.Header("X-License-Status", "blocked")
+			view := m.license.Status()
+			logger.WithField("license_status", view.Status).Debug("content filter degraded: license not valid")
+			c.Next()
+			return
+		}
 		if m.syncer == nil || m.syncer.Stale() {
 			c.Next()
 			return

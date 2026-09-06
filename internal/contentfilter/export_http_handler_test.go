@@ -285,3 +285,36 @@ func TestExportNULLColumnsSuccess(t *testing.T) {
 		}
 	})
 }
+// TestExportHTTPHandlerBlockedWhenLicenseInvalid asserts RIC-476 degradation
+// of the audit-export enterprise surface: with an invalid KEEPER license the
+// handler refuses with 403 and X-License-Status: blocked instead of silently
+// serving the download.
+func TestExportHTTPHandlerBlockedWhenLicenseInvalid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Hard-fail the shared probe singleton for this test so ExportHTTPHandler's
+	// RIC-476 gate observes an invalid license. Restore afterwards so sibling
+	// tests (which rely on an open shared probe) are unaffected.
+	sharedProbe := NewLicenseProbe("http://127.0.0.1:1", "k")
+	sharedProbe.updateState(false, licenseStatusView{Enabled: true, Status: "revoked", Mode: "block"})
+	setSharedLicenseProbe(sharedProbe)
+	t.Cleanup(func() { setSharedLicenseProbe(nil) })
+
+	r := gin.New()
+	src := ExportSource{SidecarPath: filepath.Join(t.TempDir(), "audit.db")}
+	r.GET("/v0/management/contentfilter/export", ExportHTTPHandler(src))
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/contentfilter/export?format=csv", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 under invalid license, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-License-Status") != "blocked" {
+		t.Fatalf("expected X-License-Status blocked, got %q", rec.Header().Get("X-License-Status"))
+	}
+	if !strings.Contains(rec.Body.String(), "requires an enterprise license") {
+		t.Fatalf("expected clear license-required message, got %s", rec.Body.String())
+	}
+}

@@ -30,9 +30,26 @@ import (
 // KEEPER database read-only once per request, loads the latest rules from the
 // same handle (readRulesFromOpenDB) so previews are re-masked with the current
 // rule set, then streams the matching rows to the response.
+//
+// RIC-476: the export is an enterprise (license-gated) data surface. When the
+// shared KEEPER license probe reports the license is not valid, the handler
+// refuses with a clear 403 instead of silently serving the audit download —
+// same verdict semantics as KEEPER's own feature gate.
 func ExportHTTPHandler(src ExportSource) gin.HandlerFunc {
 	engine := NewEngine(true) // outbound partial masking keeps previews readable
+	// Capture the shared probe once at construction (it is a singleton the
+	// middleware shares) so the per-request path stays lock-free.
+	probe := sharedLicenseProbe()
 	return func(c *gin.Context) {
+		// RIC-476 license 联动：audit-export 属企业功能，授权失效时显式拒绝。
+		if probe != nil && !probe.Valid() {
+			view := probe.Status()
+			logger.WithField("license_status", view.Status).
+				Warn("content filter export blocked: KEEPER license not valid")
+			c.Header("X-License-Status", "blocked")
+			c.JSON(http.StatusForbidden, gin.H{"error": "audit export requires an enterprise license (status=" + view.Status + ")"})
+			return
+		}
 		filter, err := exportFilterFromQuery(c)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
