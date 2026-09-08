@@ -69,6 +69,8 @@ func Enqueue(payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
+	// Mirror into the usage stream for consumer-group consumers (Keeper).
+	Stream(UsageStreamName).Append(time.Now(), map[string]string{"payload": string(payload)})
 	if global.publishToSubscribers(payload) {
 		return
 	}

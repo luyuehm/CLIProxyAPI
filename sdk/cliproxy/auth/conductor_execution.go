@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -307,6 +308,17 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			return cliproxyexecutor.Response{}, errPick
 		}
 
+		// RIC-561 黑名单拦截：Keeper 配额超额广播 KEY_EXHAUSTED 后，本节点在
+		// 请求执行前毫秒级拦截被拉黑的 auth index，直接返回配额用尽错误并尝试下一条。
+		if auth != nil && redisqueue.IsKeyBlocked(auth.EnsureIndex()) {
+			tried[auth.ID] = struct{}{}
+			lastErr = &Error{Code: "insufficient_quota", Message: "quota exhausted for this key"}
+			if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+				return cliproxyexecutor.Response{}, lastErr
+			}
+			continue
+		}
+
 		entry := logEntryWithRequestID(ctx)
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth)
@@ -461,6 +473,17 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				return cliproxyexecutor.Response{}, lastErr
 			}
 			return cliproxyexecutor.Response{}, errPick
+		}
+
+		// RIC-561 黑名单拦截：Keeper 配额超额广播 KEY_EXHAUSTED 后，本节点在
+		// 请求执行前毫秒级拦截被拉黑的 auth index，直接返回配额用尽错误并尝试下一条。
+		if auth != nil && redisqueue.IsKeyBlocked(auth.EnsureIndex()) {
+			tried[auth.ID] = struct{}{}
+			lastErr = &Error{Code: "insufficient_quota", Message: "quota exhausted for this key"}
+			if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+				return cliproxyexecutor.Response{}, lastErr
+			}
+			continue
 		}
 
 		entry := logEntryWithRequestID(ctx)
@@ -648,6 +671,16 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				selection.End("missing_execution_target")
 			}
 			return nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
+		}
+
+		// RIC-561 黑名单拦截：配额超额广播 KEY_EXHAUSTED 后毫秒级拦截被拉黑 auth index。
+		if auth != nil && redisqueue.IsKeyBlocked(auth.EnsureIndex()) {
+			tried[auth.ID] = struct{}{}
+			lastErr = &Error{Code: "insufficient_quota", Message: "quota exhausted for this key"}
+			if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+				return nil, lastErr
+			}
+			continue
 		}
 		if selection != nil {
 			if _, refreshedAlready := unauthorizedRefreshTried[auth.ID]; refreshedAlready {

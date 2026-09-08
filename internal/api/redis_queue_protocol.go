@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	log "github.com/sirupsen/logrus"
@@ -214,6 +215,110 @@ func (s *Server) handleRedisConnection(conn net.Conn, reader *bufio.Reader) {
 			if !flush() {
 				return
 			}
+		case "XADD":
+			entry, errMsg := handleXAdd(args)
+			if errMsg != "" {
+				_ = writeRedisError(writer, "ERR "+errMsg)
+				if !flush() {
+					return
+				}
+				continue
+			}
+			_ = writeRedisBulkString(writer, []byte(entry))
+			if !flush() {
+				return
+			}
+		case "XLEN":
+			if len(args) != 2 {
+				_ = writeRedisError(writer, "ERR wrong number of arguments for 'xlen' command")
+				if !flush() {
+					return
+				}
+				continue
+			}
+			_ = writeRedisInteger(writer, redisqueue.Stream(args[1]).Len())
+			if !flush() {
+				return
+			}
+		case "XGROUP":
+			if errMsg := handleXGroup(args); errMsg != "" {
+				_ = writeRedisError(writer, "ERR "+errMsg)
+				if !flush() {
+					return
+				}
+				continue
+			}
+			_ = writeRedisSimpleString(writer, "OK")
+			if !flush() {
+				return
+			}
+		case "XREADGROUP":
+			key, entries, errMsg := handleXReadGroup(args)
+			if errMsg != "" {
+				_ = writeRedisError(writer, "ERR "+errMsg)
+				if !flush() {
+					return
+				}
+				continue
+			}
+			if errWrite := writeStreamReadResult(writer, key, entries); errWrite != nil {
+				log.Errorf("redis protocol stream read write error: %v", errWrite)
+				return
+			}
+			if !flush() {
+				return
+			}
+		case "XACK":
+			count, errMsg := handleXAck(args)
+			if errMsg != "" {
+				_ = writeRedisError(writer, "ERR "+errMsg)
+				if !flush() {
+					return
+				}
+				continue
+			}
+			_ = writeRedisInteger(writer, count)
+			if !flush() {
+				return
+			}
+		case "PUBLISH":
+			if len(args) < 3 {
+				_ = writeRedisError(writer, "ERR wrong number of arguments for 'publish' command")
+				if !flush() {
+					return
+				}
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(args[1]), redisqueue.BlacklistChannel) {
+				redisqueue.PublishBlacklist([]byte(args[2]))
+				_ = writeRedisInteger(writer, redisqueue.BlacklistSubscriberCount())
+				if !flush() {
+					return
+				}
+				continue
+			}
+			_ = writeRedisError(writer, fmt.Sprintf("ERR unsupported channel '%s'", strings.TrimSpace(args[1])))
+			if !flush() {
+				return
+			}
+		case "BLACKLIST":
+			// BLACKLIST <auth_index> — returns 1 if the index is currently blocked,
+			// 0 otherwise. Used for introspection and verification of the local gate.
+			if len(args) != 2 {
+				_ = writeRedisError(writer, "ERR wrong number of arguments for 'blacklist' command")
+				if !flush() {
+					return
+				}
+				continue
+			}
+			if redisqueue.IsKeyBlocked(args[1]) {
+				_ = writeRedisInteger(writer, 1)
+			} else {
+				_ = writeRedisInteger(writer, 0)
+			}
+			if !flush() {
+				return
+			}
 		default:
 			_ = writeRedisError(writer, fmt.Sprintf("ERR unknown command '%s'", strings.ToLower(cmd)))
 			if !flush() {
@@ -230,6 +335,9 @@ func subscribeRedisChannel(channel string) (<-chan []byte, func(), bool) {
 		return messages, unsubscribe, true
 	case redisErrorsChannel:
 		messages, unsubscribe := redisqueue.SubscribeErrors()
+		return messages, unsubscribe, true
+	case redisqueue.BlacklistChannel:
+		messages, unsubscribe := redisqueue.SubscribeBlacklist()
 		return messages, unsubscribe, true
 	default:
 		return nil, nil, false
@@ -603,4 +711,164 @@ func writeRedisPubSubPong(writer *bufio.Writer, payload []byte) error {
 		return errWrite
 	}
 	return writeRedisBulkString(writer, payload)
+}
+
+// handleXAdd implements `XADD key [NOMKSTREAM] [MAXLEN [~|=] n] * field value...`.
+// It returns the generated entry ID on success, or an error message.
+func handleXAdd(args []string) (string, string) {
+	if len(args) < 4 {
+		return "", "wrong number of arguments for 'xadd' command"
+	}
+	key := args[1]
+	// Parse the ID token: accept "*" (auto) or an explicit numeric ID. Tokens
+	// NOMKSTREAM / MAXLEN are consumed and ignored (bounded memory is handled by
+	// the proxy's retention pruning).
+	idIdx := 2
+	if len(args) > 3 {
+		switch strings.ToUpper(args[2]) {
+		case "NOMKSTREAM":
+			idIdx = 3
+		case "MAXLEN":
+			// MAXLEN [~|=] count
+			if len(args) >= 5 {
+				idIdx = 4
+			} else {
+				idIdx = 3
+			}
+		}
+	}
+	if idIdx >= len(args) {
+		return "", "wrong number of arguments for 'xadd' command"
+	}
+	idToken := args[idIdx]
+	fields := make(map[string]string)
+	fieldIdx := idIdx + 1
+	if (len(args)-fieldIdx)%2 != 0 || fieldIdx >= len(args) {
+		return "", "wrong number of arguments for 'xadd' command"
+	}
+	for i := fieldIdx; i < len(args); i += 2 {
+		fields[args[i]] = args[i+1]
+	}
+
+	st := redisqueue.Stream(key)
+	if idToken == "*" || idToken == "" {
+		return st.Append(time.Now(), fields), ""
+	}
+	// Explicit ID: treat as monotonic millis (best-effort; no strict ordering
+	// enforcement to keep the emulator simple and forward-compatible).
+	_ = idToken
+	return st.Append(time.Now(), fields), ""
+}
+
+// handleXGroup implements `XGROUP CREATE key group id [MKSTREAM]`.
+func handleXGroup(args []string) string {
+	if len(args) < 5 || !strings.EqualFold(args[1], "CREATE") {
+		return "wrong number of arguments for 'xgroup' command"
+	}
+	key := args[2]
+	group := args[3]
+	startID := args[4]
+	if err := redisqueue.Stream(key).CreateGroup(group, startID); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// handleXReadGroup implements
+// `XREADGROUP GROUP g c [COUNT n] [BLOCK ms] STREAMS key [key...] id [id...]`.
+// Only the first stream is supported. Returns (key, entries, errMsg).
+func handleXReadGroup(args []string) (string, []redisqueue.StreamEntry, string) {
+	if len(args) < 6 {
+		return "", nil, "wrong number of arguments for 'xreadgroup' command"
+	}
+	// GROUP g c
+	group := args[2]
+	consumer := args[3]
+
+	count := 1
+	idx := 4
+	for idx < len(args) {
+		switch strings.ToUpper(args[idx]) {
+		case "COUNT":
+			if idx+1 < len(args) {
+				if n, err := strconv.Atoi(args[idx+1]); err == nil && n > 0 {
+					count = n
+				}
+				idx += 2
+				continue
+			}
+			return "", nil, "wrong number of arguments for 'xreadgroup' command"
+		case "BLOCK":
+			// Block is advisory in the in-process emulator; ignore the value.
+			if idx+1 < len(args) {
+				idx += 2
+				continue
+			}
+			return "", nil, "wrong number of arguments for 'xreadgroup' command"
+		case "STREAMS":
+			idx++
+			if idx >= len(args) || idx+1 >= len(args) {
+				return "", nil, "wrong number of arguments for 'xreadgroup' command"
+			}
+			key := args[idx]
+			_ = args[idx+1] // start id: only ">" (new entries) is meaningful here
+			entries := redisqueue.Stream(key).ReadGroup(group, consumer, count)
+			return key, entries, ""
+		default:
+			return "", nil, "wrong number of arguments for 'xreadgroup' command"
+		}
+	}
+	return "", nil, "wrong number of arguments for 'xreadgroup' command"
+}
+
+// handleXAck implements `XACK key group id [id...]`. Returns (ackedCount, errMsg).
+func handleXAck(args []string) (int, string) {
+	if len(args) < 4 {
+		return 0, "wrong number of arguments for 'xack' command"
+	}
+	key := args[1]
+	group := args[2]
+	ids := args[3:]
+	before := redisqueue.Stream(key).PendingCount(group)
+	redisqueue.Stream(key).Ack(group, ids)
+	after := redisqueue.Stream(key).PendingCount(group)
+	return before - after, ""
+}
+
+// writeStreamReadResult writes an XREADGROUP response:
+// `*1 *2 $key *N ($id *2 $field $value ...)...`.
+func writeStreamReadResult(writer *bufio.Writer, key string, entries []redisqueue.StreamEntry) error {
+	if errWrite := writeRedisArrayHeader(writer, 1); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeRedisArrayHeader(writer, 2); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeRedisBulkString(writer, []byte(key)); errWrite != nil {
+		return errWrite
+	}
+	if errWrite := writeRedisArrayHeader(writer, len(entries)); errWrite != nil {
+		return errWrite
+	}
+	for _, entry := range entries {
+		if errWrite := writeRedisArrayHeader(writer, 2); errWrite != nil {
+			return errWrite
+		}
+		if errWrite := writeRedisBulkString(writer, []byte(entry.ID)); errWrite != nil {
+			return errWrite
+		}
+		// Field-value pairs.
+		if errWrite := writeRedisArrayHeader(writer, len(entry.Fields)*2); errWrite != nil {
+			return errWrite
+		}
+		for field, value := range entry.Fields {
+			if errWrite := writeRedisBulkString(writer, []byte(field)); errWrite != nil {
+				return errWrite
+			}
+			if errWrite := writeRedisBulkString(writer, []byte(value)); errWrite != nil {
+				return errWrite
+			}
+		}
+	}
+	return nil
 }
