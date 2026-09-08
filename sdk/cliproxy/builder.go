@@ -10,6 +10,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -301,6 +302,15 @@ func (b *Builder) Build() (*Service, error) {
 	// /v0/management/contentfilter/export). Same enable switch as the filter.
 	if cfExportOpt := contentfilter.ExportServerOption(); cfExportOpt != nil {
 		service.serverOptions = append(service.serverOptions, cfExportOpt)
+	}
+	// RIC-557: data-plane per-API-key rate limiter + KEEPER quota-exhausted
+	// circuit breaker (internal/dataratelimit). Mounts through the pre-reserved
+	// api.WithMiddleware() extension point. Enabled via CPA_RATE_LIMIT_ENABLED;
+	// pulls KEEPER quota status (5s poll) when the KEEPER URL + management key
+	// are configured. Returns nil when disabled, so this line is a no-op by
+	// default.
+	if rlOpt := dataratelimit.ServerOption(); rlOpt != nil {
+		service.serverOptions = append(service.serverOptions, rlOpt)
 	}
 	return service, nil
 }
