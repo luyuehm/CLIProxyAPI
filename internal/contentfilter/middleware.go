@@ -136,6 +136,23 @@ func (m *Middleware) filterRequest(c *gin.Context, rules []*Rule) (string, bool)
 	if res.Changed {
 		m.enqueueAudit(c, res, "inbound", model, string(body), res.Text)
 	}
+	// RIC-578: masking is regex-based string surgery on the raw JSON body and
+	// can corrupt it (e.g. a PII run adjacent to a `\` leaves a bare `\*` —
+	// an invalid JSON escape that makes the upstream reject with HTTP 400).
+	// Never hand a corrupted body downstream: if the masked result is no longer
+	// valid JSON, fall back to the original body and log the mismatch. The
+	// regex boundary fix (engine.go) prevents the corruption at the source;
+	// this guard is defense-in-depth for any future masking edge case.
+	if res.Changed && !json.Valid(masked) {
+		logger.WithField("model", model).
+			WithField("rule_count", len(rules)).
+			WithField("match_count", len(res.Matches)).
+			Warn("content filter: masked request body is not valid JSON; passing through original body")
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		c.Request.ContentLength = int64(len(body))
+		c.Set(gin.BodyBytesKey, body)
+		return model, stream
+	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(masked))
 	c.Request.ContentLength = int64(len(masked))
 	c.Set(gin.BodyBytesKey, masked)

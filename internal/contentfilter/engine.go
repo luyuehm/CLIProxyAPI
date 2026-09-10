@@ -75,13 +75,21 @@ var (
 	//
 	// Tightened 2026-08-31 (RIC-440): rejects pure repeat digits (00000000000)
 	// and common test-book values (12345678901) via verifyPhone below.
-	phoneRe = regexp.MustCompile(`(?:^|[^0-9])(1[3-9][0-9]{9})(?:[^0-9]|$)`)
+	//
+	// RIC-578: the boundary class must never match a backslash. When a PII run
+	// is preceded/followed by `\` (escaped content, code snippets, Windows
+	// paths), a `[^0-9]` boundary consumes the backslash while the mask
+	// replaces only the digits, leaving a bare `\*` in the JSON body — an
+	// invalid JSON escape that makes the upstream provider reject the request
+	// with "invalid escape sequence \* in string" (HTTP 400).
+	phoneRe = regexp.MustCompile(`(?:^|[^0-9\\])(1[3-9][0-9]{9})(?:[^0-9\\]|$)`)
 
 	// idCardRe matches 18-digit Chinese ID card numbers (17 digits + digit/X)
 	// on digit boundaries. The verifier rejects sequences that do not pass
 	// the GB 11643 check-digit (10/100 chance for a random match, so false
 	// positives drop ~10x; all-zero or trivial sequences are also rejected).
-	idCardRe = regexp.MustCompile(`(?:^|[^0-9])([0-9]{17}[0-9Xx])(?:[^0-9]|$)`)
+	// RIC-578: see phoneRe — boundary must not consume a backslash.
+	idCardRe = regexp.MustCompile(`(?:^|[^0-9\\])([0-9]{17}[0-9Xx])(?:[^0-9\\]|$)`)
 
 	// emailRe matches common email addresses. The RFC-perfect form is
 	// impractical; we keep the practical subset used by KEEPER. The verifier
@@ -91,7 +99,8 @@ var (
 	// bankCardRe matches 13-19 digit runs with optional space/dash separators.
 	// Verifier requires Luhn validity so a random digit string does not match
 	// (drops the false-positive rate to ~1/10 on Luhn-valid 16-digit noise).
-	bankCardRe = regexp.MustCompile(`(?:^|[^0-9])((?:[0-9][\s-]?){12,18}[0-9])(?:[^0-9]|$)`)
+	// RIC-578: see phoneRe — boundary must not consume a backslash.
+	bankCardRe = regexp.MustCompile(`(?:^|[^0-9\\])((?:[0-9][\s-]?){12,18}[0-9])(?:[^0-9\\]|$)`)
 
 	// passportRe matches passports: 1-2 uppercase letters followed by 7 digits
 	// on word boundaries. Verifier requires the prefix letter set used by

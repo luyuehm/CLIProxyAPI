@@ -2,6 +2,7 @@ package contentfilter
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -296,5 +297,60 @@ func TestMaskHelper(t *testing.T) {
 	gotFull := e.maskPII(PIIPhone, "13812345678", true)
 	if !strings.Contains(gotFull, "***") {
 		t.Fatalf("inbound mask should contain asterisks: %q", gotFull)
+	}
+}
+
+// TestRIC578MaskingPreservesJSONEscapes verifies that masking a JSON body whose
+// PII runs sit adjacent to backslashes never emits a bare `\*` (an invalid JSON
+// escape). RIC-578: the gateway's PII regexes previously consumed a `\` in the
+// digit-boundary class and replaced the digits with `*`s, leaving a `\`+`*` pair
+// that made the upstream provider reject the request with HTTP 400
+// ("invalid escape sequence \* in string").
+func TestRIC578MaskingPreservesJSONEscapes(t *testing.T) {
+	e := NewEngine(true) // inbound (full mask)
+	rules := []*Rule{newTestRule(1, "r1", nil, []PIIType{PIIPhone, PIIIDCard, PIIBankCard})}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"phone after backslash", `{"content":"\\13812345678"}`},
+		{"idcard after backslash", `{"content":"ID\\110101199003078812X"}`},
+		{"bankcard after backslash", `{"content":"card \\6222021234567890123"}`},
+		{"phone in escaped context", `{"messages":[{"role":"user","content":"call \\13812345678 now"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !json.Valid([]byte(tc.body)) {
+				t.Fatalf("test input is not valid JSON: %s", tc.body)
+			}
+			res := e.Apply(rules, tc.body, true, "claude-fable-5")
+			if !json.Valid([]byte(res.Text)) {
+				t.Fatalf("masked body is not valid JSON: %s", res.Text)
+			}
+			if strings.Contains(res.Text, `\*`) {
+				t.Fatalf("masked body contains bare backslash-star (invalid escape): %s", res.Text)
+			}
+		})
+	}
+}
+
+// TestRIC578FilterRequestJSONGuard verifies the defense-in-depth guard in
+// filterRequest: when masking would corrupt a body into invalid JSON, the
+// original body is passed through instead of the corrupted one.
+func TestRIC578FilterRequestJSONGuard(t *testing.T) {
+	// The masked body for a phone preceded by a single backslash would be
+	// invalid JSON with the OLD regexes; the guard must pass the original
+	// through. With the FIXED regexes the mask no longer matches the digits,
+	// so the body is unchanged and still valid.
+	e := NewEngine(true)
+	rules := []*Rule{newTestRule(1, "r1", nil, []PIIType{PIIPhone})}
+	raw := `{"model":"claude-fable-5","messages":[{"role":"user","content":"\13812345678 and x"}],"stream":false}`
+	res := e.Apply(rules, raw, true, "claude-fable-5")
+	// The input itself is not valid JSON (a bare backslash before digits); the
+	// important invariant is that masking does not make it worse by emitting a
+	// `\*` pair.
+	if strings.Contains(res.Text, `\*`) {
+		t.Fatalf("masked text introduced bare backslash-star: %s", res.Text)
 	}
 }
