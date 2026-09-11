@@ -37,13 +37,6 @@ func serveRequest(router http.Handler, req *http.Request) (int, string) {
 	return resp.Code, resp.Body.String()
 }
 
-func extractBearer(header string) string {
-	if len(header) > 7 && header[:7] == "Bearer " {
-		return header[7:]
-	}
-	return header
-}
-
 func TestStoreApplyAndGet(t *testing.T) {
 	store := NewStore()
 	if store.Verified() {
