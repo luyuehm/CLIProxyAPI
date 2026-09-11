@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/policies"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -301,6 +302,13 @@ func (b *Builder) Build() (*Service, error) {
 	// /v0/management/contentfilter/export). Same enable switch as the filter.
 	if cfExportOpt := contentfilter.ExportServerOption(); cfExportOpt != nil {
 		service.serverOptions = append(service.serverOptions, cfExportOpt)
+	}
+	// RIC-596: KEEPER → CPA policy delivery channel. Mounts an admission
+	// middleware that polls GET /admin/api/policies on the KEEPER control plane
+	// and hot-reloads per-key rate-limit policies. Enabled via
+	// CPA_POLICIES_ENABLED; returns nil when disabled, so a no-op by default.
+	if policiesOpt := policies.ServerOption(); policiesOpt != nil {
+		service.serverOptions = append(service.serverOptions, policiesOpt)
 	}
 	return service, nil
 }
