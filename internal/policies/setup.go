@@ -17,8 +17,9 @@ const (
 	// enables, "0"|"false"|"no"|"off" disables. Unset means disabled.
 	EnvEnabled = "CPA_POLICIES_ENABLED"
 	// EnvKeeperURL is the KEEPER control-plane base URL (e.g.
-	// http://127.0.0.1:4320). When set alongside EnvKeeperKey the puller is
-	// active. If empty, it is derived from CPA_BASE_URL (port → 4320).
+	// http://127.0.0.1:4320, or http://keeper:8080/keeper when the deployment
+	// sets APP_BASE_PATH=/keeper). When set alongside EnvKeeperKey the puller
+	// is active. If empty, it is derived from CPA_BASE_URL (port → 4320).
 	EnvKeeperURL = "CPA_POLICIES_KEEPER_URL"
 	// EnvKeeperKey is the shared X-CPA-Management-Key used to authenticate the
 	// CPA-to-KEEPER policy pull.

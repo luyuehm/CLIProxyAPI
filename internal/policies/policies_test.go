@@ -198,6 +198,21 @@ func TestMiddlewareEnforcesConcurrency(t *testing.T) {
 	}
 }
 
+func TestDeriveKeeperURL(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"http://127.0.0.1:8317", "http://127.0.0.1:4320"},
+		{"https://cpa.example.com:8317", "https://cpa.example.com:4320"},
+		{"http://cpa:8317/", "http://cpa:4320"},
+	}
+	for _, tc := range cases {
+		if got := deriveKeeperURL(tc.in); got != tc.want {
+			t.Fatalf("deriveKeeperURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestMiddlewareIgnoresNonDataPlane(t *testing.T) {
 	store := NewStore()
 	store.Apply([]Policy{{APIKey: "sk-a", RPMLimit: 1}})
