@@ -116,19 +116,63 @@ func (m *Middleware) guardedPath(requestPath string) bool {
 }
 
 // apiKeyFromContext extracts the resolved API key set by AuthMiddleware.
+//
+// Because this middleware is mounted globally (before the /v1 route group's
+// AuthMiddleware), the "userApiKey" context value is not yet populated on the
+// request path. We therefore also resolve the bearer token directly from the
+// Authorization header (and its aliases), matching the access-manager's key
+// extraction so the delivered KEEPER policy keys line up with what the
+// credential provider authenticates.
 func apiKeyFromContext(c *gin.Context) string {
 	if c == nil {
 		return ""
 	}
-	value, exists := c.Get("userApiKey")
-	if !exists {
+	if value, exists := c.Get("userApiKey"); exists {
+		if key, ok := value.(string); ok && key != "" {
+			return key
+		}
+	}
+	return bearerFromHeader(c.Request)
+}
+
+// bearerFromHeader resolves the API key from the standard auth headers the
+// access manager checks: Authorization Bearer, X-Goog-Api-Key, X-Api-Key, and
+// the ?key= query parameter.
+func bearerFromHeader(r *http.Request) string {
+	if r == nil {
 		return ""
 	}
-	key, ok := value.(string)
-	if !ok {
+	for _, candidate := range []string{
+		extractBearer(r.Header.Get("Authorization")),
+		r.Header.Get("X-Goog-Api-Key"),
+		r.Header.Get("X-Api-Key"),
+	} {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	if queryKey := r.URL.Query().Get("key"); queryKey != "" {
+		return queryKey
+	}
+	return ""
+}
+
+// extractBearer pulls the token out of an "Authorization: Bearer <token>"
+// header, or returns the raw value when there is no Bearer prefix (matching
+// the access-manager behaviour for non-standard auth material).
+func extractBearer(header string) string {
+	header = strings.TrimSpace(header)
+	if header == "" {
 		return ""
 	}
-	return key
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) != 2 {
+		return header
+	}
+	if !strings.EqualFold(parts[0], "bearer") {
+		return header
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 // bucket is a fixed-window per-second token bucket. The window resets on the
