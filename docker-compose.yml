@@ -5,7 +5,11 @@ services:
     # CLI_PROXY_IMAGE in .env cannot pull the old remote image over this
     # deployment. The previous pin (deploy-ric457 = stable-v7.2.147, commit
     # 17a65ee5) predated the contentfilter feature and had no export handler.
-    image: cli-proxy-api:deploy-ric460
+    # RIC-578: stable-v7.2.156 carries the content-filter JSON-corruption fix
+    # (PII masking no longer emits a bare `\*` invalid escape).
+    # RIC-750: v7.3.1 enterprise merge — upstream 44e62bc8 + KEEPER/contentfilter
+    # (PII masking, audit export, KEEPER license linkage) preserved intact.
+    image: cli-proxy-api:stable-v7.3.1
     pull_policy: never
     build:
       context: .
