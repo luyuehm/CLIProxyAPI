@@ -728,9 +728,13 @@ func main() {
 		if tuiMode {
 			if standalone {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
+				offlineUpdaters := cfg.OfflineEnabled()
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
 				misc.StartAntigravityVersionUpdater(context.Background())
-				startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+				if offlineUpdaters {
+					log.Info("Offline mode: remote model catalog updates disabled")
+				}
+				startModelCatalogUpdaters(localModel, cfg.Home.Enabled, offlineUpdaters)
 				hook := tui.NewLogHook(2000)
 				hook.SetFormatter(&logging.LogFormatter{})
 				log.AddHook(hook)
@@ -802,9 +806,13 @@ func main() {
 			}
 		} else {
 			// Start the main proxy service
+			offlineUpdaters := cfg.OfflineEnabled()
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
 			misc.StartAntigravityVersionUpdater(context.Background())
-			startModelCatalogUpdaters(localModel, cfg.Home.Enabled)
+			if offlineUpdaters {
+				log.Info("Offline mode: remote model catalog updates disabled")
+			}
+			startModelCatalogUpdaters(localModel, cfg.Home.Enabled, offlineUpdaters)
 			cmd.StartServiceWithPluginHost(cfg, configFilePath, password, pluginHost, serverOptions...)
 		}
 	}
@@ -812,16 +820,18 @@ func main() {
 
 // modelCatalogUpdaterPlan decides which remote model catalogs should refresh.
 // Codex client templates still refresh under Home mode because the model list
-// comes from Home IDs while template metadata stays edge-local.
-func modelCatalogUpdaterPlan(localModel, homeEnabled bool) (startModels, startCodexClient bool) {
-	if localModel {
+// comes from Home IDs while template metadata stays edge-local. Offline-first
+// routing (D4 offline.mode) disables all remote catalog refresh because the
+// gateway must not make outbound network attempts when operating offline.
+func modelCatalogUpdaterPlan(localModel, homeEnabled, offlineEnabled bool) (startModels, startCodexClient bool) {
+	if localModel || offlineEnabled {
 		return false, false
 	}
 	return !homeEnabled, true
 }
 
-func startModelCatalogUpdaters(localModel, homeEnabled bool) {
-	startModels, startCodexClient := modelCatalogUpdaterPlan(localModel, homeEnabled)
+func startModelCatalogUpdaters(localModel, homeEnabled, offlineEnabled bool) {
+	startModels, startCodexClient := modelCatalogUpdaterPlan(localModel, homeEnabled, offlineEnabled)
 	if startCodexClient {
 		registry.StartCodexClientModelsUpdater(context.Background())
 	}

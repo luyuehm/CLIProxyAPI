@@ -93,6 +93,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 		name            string
 		localModel      bool
 		homeEnabled     bool
+		offlineEnabled  bool
 		wantModels      bool
 		wantCodexClient bool
 	}{
@@ -100,6 +101,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 			name:            "normal CPA refreshes both catalogs",
 			localModel:      false,
 			homeEnabled:     false,
+			offlineEnabled:  false,
 			wantModels:      true,
 			wantCodexClient: true,
 		},
@@ -107,6 +109,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 			name:            "home mode keeps models.json local and refreshes codex templates",
 			localModel:      false,
 			homeEnabled:     true,
+			offlineEnabled:  false,
 			wantModels:      false,
 			wantCodexClient: true,
 		},
@@ -114,6 +117,7 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 			name:            "local-model disables both remote catalogs",
 			localModel:      true,
 			homeEnabled:     false,
+			offlineEnabled:  false,
 			wantModels:      false,
 			wantCodexClient: false,
 		},
@@ -121,16 +125,33 @@ func TestModelCatalogUpdaterPlan(t *testing.T) {
 			name:            "local-model disables both remote catalogs even under home",
 			localModel:      true,
 			homeEnabled:     true,
+			offlineEnabled:  false,
+			wantModels:      false,
+			wantCodexClient: false,
+		},
+		{
+			name:            "offline mode disables both remote catalogs",
+			localModel:      false,
+			homeEnabled:     false,
+			offlineEnabled:  true,
+			wantModels:      false,
+			wantCodexClient: false,
+		},
+		{
+			name:            "offline mode disables both remote catalogs even under home",
+			localModel:      false,
+			homeEnabled:     true,
+			offlineEnabled:  true,
 			wantModels:      false,
 			wantCodexClient: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotModels, gotCodex := modelCatalogUpdaterPlan(tt.localModel, tt.homeEnabled)
+			gotModels, gotCodex := modelCatalogUpdaterPlan(tt.localModel, tt.homeEnabled, tt.offlineEnabled)
 			if gotModels != tt.wantModels || gotCodex != tt.wantCodexClient {
-				t.Fatalf("modelCatalogUpdaterPlan(%v, %v) = (%v, %v), want (%v, %v)",
-					tt.localModel, tt.homeEnabled, gotModels, gotCodex, tt.wantModels, tt.wantCodexClient)
+				t.Fatalf("modelCatalogUpdaterPlan(%v, %v, %v) = (%v, %v), want (%v, %v)",
+					tt.localModel, tt.homeEnabled, tt.offlineEnabled, gotModels, gotCodex, tt.wantModels, tt.wantCodexClient)
 			}
 		})
 	}

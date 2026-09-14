@@ -293,6 +293,54 @@ type QuotaExceeded struct {
 }
 
 // RoutingConfig configures how credentials are selected for requests.
+// OfflineHealthCheckConfig configures proactive endpoint health probing for
+// offline-first routing. The gateway probes each configured OpenAI-compatible
+// endpoint (GET base-url + path with a short timeout) on an interval and
+// records availability through the same model-state machinery used for request
+// failures, so unhealthy endpoints are automatically failed over.
+type OfflineHealthCheckConfig struct {
+	// Enabled turns on the background health-check loop. Default false.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Interval between probes. Accepts duration strings ("30s", "1m").
+	// Default: 30s.
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+
+	// Timeout bounds each probe request. Accepts duration strings.
+	// Default: 3s.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// Path is the probe endpoint (OpenAI-compatible) appended to the base URL.
+	// Default: "/models".
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+
+	// ProbeOnlyLocal when true (default in offline mode) probes only local://
+	// endpoints. Remote endpoints are probed only when this is false.
+	ProbeOnlyLocal *bool `yaml:"probe-only-local,omitempty" json:"probe-only-local,omitempty"`
+}
+
+// OfflineRoutingConfig controls offline-first hybrid routing behavior.
+type OfflineRoutingConfig struct {
+	// Mode enables offline-first routing. When enabled, the gateway prefers
+	// local endpoints, and (unless AllowRemoteFallback) treats remote endpoints
+	// as unavailable so requests stay inside the trusted network.
+	Mode bool `yaml:"mode" json:"mode"`
+
+	// PreferLocal when enabled (default true) makes local endpoints take
+	// precedence over remote endpoints of equal priority. When false, priority
+	// numbers alone decide ordering.
+	PreferLocal *bool `yaml:"prefer-local,omitempty" json:"prefer-local,omitempty"`
+
+	// AllowRemoteFallback when true lets the gateway fall back to remote
+	// endpoints when no local candidate is available. When false (default in
+	// offline mode), remote endpoints are excluded entirely unless they are the
+	// only configured options.
+	AllowRemoteFallback *bool `yaml:"allow-remote-fallback,omitempty" json:"allow-remote-fallback,omitempty"`
+
+	// HealthCheck configures proactive endpoint health probing.
+	HealthCheck OfflineHealthCheckConfig `yaml:"health-check,omitempty" json:"health-check,omitempty"`
+}
+
 type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "weighted-round-robin", "fill-first".
@@ -315,6 +363,10 @@ type RoutingConfig struct {
 	// When false, subagents are distributed across the credential pool via the fallback selector.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
+
+	// Offline configures offline-first hybrid routing (D4): local endpoint
+	// preference, remote fallback policy, and proactive endpoint health checks.
+	Offline OfflineRoutingConfig `yaml:"offline,omitempty" json:"offline,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -731,7 +783,16 @@ type OpenAICompatibility struct {
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
+	// A "local://" prefix marks the endpoint as local (on-prem/offline); the
+	// scheme is translated to "http://" at auth synthesis time and the endpoint
+	// kind is recorded on the auth attributes so offline-first routing can
+	// prefer it over remote endpoints.
 	BaseURL string `yaml:"base-url" json:"base-url"`
+
+	// Local marks this provider as a local (on-prem/offline) endpoint even when
+	// the base URL does not carry a "local://" prefix. The endpoint kind is
+	// recorded on synthesized auth attributes for offline-first routing.
+	Local bool `yaml:"local,omitempty" json:"local,omitempty"`
 
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`

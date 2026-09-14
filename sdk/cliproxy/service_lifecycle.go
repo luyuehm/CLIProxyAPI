@@ -206,6 +206,13 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 	}
 
+	// D4 offline-first routing: proactive endpoint health checks. The loop
+	// self-disables when the config has health-check disabled, so starting it
+	// unconditionally is safe.
+	if s.coreManager != nil {
+		s.coreManager.StartOfflineHealthCheck(context.Background())
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Debug("service context cancelled, shutting down...")

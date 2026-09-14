@@ -458,14 +458,24 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
 	}
 
+	offlineCfg := m.runtimeConfigSnapshot()
 	availableByPriority := make(map[int][]*Auth)
 	cooldownCount := 0
 	var earliest time.Time
 	for _, candidate := range auths {
+		// D4 offline-first routing: filter and boost endpoints by kind before
+		// availability bucketing so local endpoints outrank remote ones.
+		offlineEligible, offlineOK := authOfflineEligibility(candidate, offlineCfg)
+		if !offlineOK {
+			continue
+		}
 		checkModel := m.selectionModelForAuth(candidate, routeModel)
 		blocked, reason, next := isAuthBlockedForModel(candidate, checkModel, now)
 		if !blocked {
 			priority := authPriority(candidate)
+			if offlineEligible != nil {
+				priority += offlineEligible.boost
+			}
 			availableByPriority[priority] = append(availableByPriority[priority], candidate)
 			continue
 		}
@@ -1452,7 +1462,16 @@ func (m *Manager) useSchedulerFastPath() bool {
 	if m == nil || m.scheduler == nil {
 		return false
 	}
-	return isBuiltInSelector(m.Selector())
+	if !isBuiltInSelector(m.Selector()) {
+		return false
+	}
+	// Offline-first routing needs the careful endpoint-kind filtering done in the
+	// legacy availability path, so bypass the scheduler cache (which stores only
+	// the configured priority) whenever a local/remote preference is in play.
+	if cfg := m.runtimeConfigSnapshot(); cfg != nil && cfg.OfflineEnabled() {
+		return false
+	}
+	return true
 }
 
 func shouldRetrySchedulerPick(err error) bool {

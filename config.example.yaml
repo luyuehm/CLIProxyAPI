@@ -237,6 +237,26 @@ routing:
   # Ignored when routing.session-affinity is false.
   session-affinity-subagents: true
 
+  # ---- Offline-first hybrid routing (D4) ----
+  # offline.mode enables offline-first routing: local endpoints (base-url prefixed
+  # with "local://", or an openai-compatibility entry with local: true) are preferred
+  # and remote endpoints are excluded unless allow-remote-fallback is true. When the
+  # gateway runs offline it also disables remote model-catalog refresh so no outbound
+  # network attempt is made.
+  offline:
+    mode: false # default: false
+    prefer-local: true # local endpoints outrank remote endpoints of equal priority
+    allow-remote-fallback: false # allow remote endpoints when no local candidate is available
+    # Proactive endpoint health checks drive automatic failover even with no request
+    # traffic: an unhealthy endpoint is excluded (same availability machinery as a
+    # request failure) and re-admitted when it recovers.
+    health-check:
+      enabled: false # default: false
+      interval: "30s" # default: 30s
+      timeout: "3s" # default: 3s
+      path: "/models" # OpenAI-compatible probe path
+      probe-only-local: true # default: true in offline mode
+
 # Codex provider behavior.
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,

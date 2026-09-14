@@ -295,6 +295,14 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		}
 		internalProviderKey := util.OpenAICompatibleProviderKey(providerName)
 		base := strings.TrimSpace(compat.BaseURL)
+		// D4 offline-first routing: translate local:// to the plain HTTP scheme
+		// (the normal transport consumes it unchanged) and record the endpoint
+		// kind so the offline router can prefer local endpoints over remote ones.
+		endpointKind := util.EndpointKindRemote
+		if util.IsLocalEndpointURL(base) || compat.Local {
+			endpointKind = util.EndpointKindLocal
+		}
+		base = util.NormalizeEndpointBaseURL(base)
 		disableCooling := compat.DisableCooling
 
 		// Handle new APIKeyEntries format (preferred)
@@ -311,6 +319,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"compat_name":  compat.Name,
 				"provider_key": internalProviderKey,
 				"config_index": strconv.Itoa(i),
+			}
+			if endpointKind != util.EndpointKindRemote {
+				attrs["endpoint_kind"] = endpointKind
 			}
 			metadata := map[string]any{}
 			if disableCooling != nil {
@@ -357,6 +368,9 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				"compat_name":  compat.Name,
 				"provider_key": internalProviderKey,
 				"config_index": strconv.Itoa(i),
+			}
+			if endpointKind != util.EndpointKindRemote {
+				attrs["endpoint_kind"] = endpointKind
 			}
 			metadata := map[string]any{}
 			if disableCooling != nil {

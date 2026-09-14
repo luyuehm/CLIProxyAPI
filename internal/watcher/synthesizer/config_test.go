@@ -1268,3 +1268,108 @@ func TestConfigSynthesizer_RequestScopedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigSynthesizer_OpenAICompatLocalEndpoint(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "ollama",
+					BaseURL: "local://127.0.0.1:11434/v1",
+					Models:  []config.OpenAICompatibilityModel{{Name: "llama3", Alias: "local-llama"}},
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: ""},
+					},
+				},
+				{
+					Name:    "openrouter",
+					BaseURL: "https://openrouter.ai/api/v1",
+					Models:  []config.OpenAICompatibilityModel{{Name: "kimi-k2", Alias: "cloud-kimi"}},
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "sk-test"},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("Synthesize() error = %v", errSynthesize)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("auth count = %d, want 2", len(auths))
+	}
+
+	var localAuth, remoteAuth *coreauth.Auth
+	for _, a := range auths {
+		if a.Attributes["compat_name"] == "ollama" {
+			localAuth = a
+		}
+		if a.Attributes["compat_name"] == "openrouter" {
+			remoteAuth = a
+		}
+	}
+	if localAuth == nil {
+		t.Fatal("local auth (ollama) not synthesized")
+	}
+	if remoteAuth == nil {
+		t.Fatal("remote auth (openrouter) not synthesized")
+	}
+
+	// local:// must be translated to http:// for the transport.
+	if got := localAuth.Attributes["base_url"]; got != "http://127.0.0.1:11434/v1" {
+		t.Fatalf("local base_url = %q, want http://127.0.0.1:11434/v1", got)
+	}
+	if got := localAuth.Attributes["endpoint_kind"]; got != "local" {
+		t.Fatalf("local endpoint_kind = %q, want local", got)
+	}
+
+	// Remote stays untouched and carries no endpoint_kind tag (absent means
+	// remote, which keeps legacy configs unchanged).
+	if got := remoteAuth.Attributes["base_url"]; got != "https://openrouter.ai/api/v1" {
+		t.Fatalf("remote base_url = %q, want https://openrouter.ai/api/v1", got)
+	}
+	if got := remoteAuth.Attributes["endpoint_kind"]; got != "" {
+		t.Fatalf("remote endpoint_kind = %q, want empty (untagged remote)", got)
+	}
+}
+
+func TestConfigSynthesizer_OpenAICompatLocalFlag(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "vllm",
+					BaseURL: "http://10.0.0.5:8000/v1",
+					Local:   true,
+					Models:  []config.OpenAICompatibilityModel{{Name: "qwen", Alias: "local-qwen"}},
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: ""},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, errSynthesize := synth.Synthesize(ctx)
+	if errSynthesize != nil {
+		t.Fatalf("Synthesize() error = %v", errSynthesize)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("auth count = %d, want 1", len(auths))
+	}
+	if got := auths[0].Attributes["endpoint_kind"]; got != "local" {
+		t.Fatalf("endpoint_kind = %q, want local (from local flag)", got)
+	}
+	// The base URL is not translated when it is already plain http.
+	if got := auths[0].Attributes["base_url"]; got != "http://10.0.0.5:8000/v1" {
+		t.Fatalf("base_url = %q, want http://10.0.0.5:8000/v1", got)
+	}
+}

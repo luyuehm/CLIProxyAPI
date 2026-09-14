@@ -100,6 +100,10 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return
 	}
+	if e.offlineEndpointBlocked(auth) {
+		err = statusErr{code: http.StatusServiceUnavailable, msg: "remote endpoint blocked in offline mode"}
+		return
+	}
 
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -226,6 +230,9 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return resp, err
 	}
+	if e.offlineEndpointBlocked(auth) {
+		return resp, statusErr{code: http.StatusServiceUnavailable, msg: "remote endpoint blocked in offline mode"}
+	}
 
 	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), false)
 	if errPrepare != nil {
@@ -318,6 +325,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
+	}
+	if e.offlineEndpointBlocked(auth) {
+		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "remote endpoint blocked in offline mode"}
 	}
 
 	from := opts.SourceFormat
@@ -580,6 +590,9 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 	if baseURL == "" {
 		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
 		return nil, err
+	}
+	if e.offlineEndpointBlocked(auth) {
+		return nil, statusErr{code: http.StatusServiceUnavailable, msg: "remote endpoint blocked in offline mode"}
 	}
 
 	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), true)
@@ -913,6 +926,24 @@ func (e *OpenAICompatExecutor) applyPromptCacheKey(ctx context.Context, auth *cl
 	}, "\x00")
 	promptCacheKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte(identity)).String()
 	return helps.SetStringIfDifferent(translated, "prompt_cache_key", promptCacheKey), nil
+}
+
+// offlineEndpointBlocked reports whether a request to this endpoint must be
+// refused under D4 offline-first routing. When offline.mode is enabled, remote
+// (non-local) endpoints are refused unless the operator explicitly whitelists
+// remote fallback. Local endpoints are always allowed.
+func (e *OpenAICompatExecutor) offlineEndpointBlocked(auth *cliproxyauth.Auth) bool {
+	if e == nil || e.cfg == nil || auth == nil || !e.cfg.OfflineEnabled() {
+		return false
+	}
+	if auth.IsLocalEndpoint() {
+		return false
+	}
+	// Remote endpoints are blocked unless allow-remote-fallback is set. Untagged
+	// endpoints (legacy configs that never set endpoint_kind) count as remote for
+	// the executor-level guard; the request-time selector is more lenient so the
+	// gateway does not silently break legacy configs.
+	return !e.cfg.OfflineAllowRemoteFallback()
 }
 
 func (e *OpenAICompatExecutor) resolveCredentials(auth *cliproxyauth.Auth) (baseURL, apiKey string) {
