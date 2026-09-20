@@ -9,7 +9,7 @@ services:
     # (PII masking no longer emits a bare `\*` invalid escape).
     # RIC-750: v7.3.1 enterprise merge — upstream 44e62bc8 + KEEPER/contentfilter
     # (PII masking, audit export, KEEPER license linkage) preserved intact.
-    image: cli-proxy-api:stable-v7.3.1
+    image: cli-proxy-api:stable-v7.3.9
     pull_policy: never
     build:
       context: .
