@@ -27,6 +27,19 @@
 
 CPA Usage Keeper is a standalone persistence and analytics dashboard for [CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI). It stores CPA usage in SQLite, pulls CPA configuration and credential data, and provides views for usage, cost, request health, quotas, and model/API statistics.
 
+> **Snapshot copy — not the source of truth (RIC-636).** This `keeper/` subtree inside the
+> CLIProxyAPI monorepo is a **reference snapshot**, synced on demand via the Multica
+> enterprise policy. The **authoritative source is
+> [luyuehm/enterprise-keeper](https://github.com/luyuehm/enterprise-keeper)** (upstream:
+> [Willxup/cpa-usage-keeper](https://github.com/Willxup/cpa-usage-keeper)). It is intentionally
+> **NOT a complete, buildable copy** — directories such as
+> `internal/repository/overviewstore/`, `internal/service/tokenprocessor/`, several
+> `internal/entities` types, and the generated `web/dist/` are only present in the
+> enterprise-keeper repo. Consequently `go build ./...` / `go test ./...` inside `keeper/` are
+> **not expected to pass** and are **excluded from the monorepo CI** (the root `go build ./...`
+> ignores this nested Go module). Do not treat snapshot breakage as a regression, and do not
+> fix it by backfilling files here. To develop or build Keeper, use the enterprise-keeper repo.
+
 ## Screenshots
 
 <p align="center">

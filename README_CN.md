@@ -142,6 +142,8 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 独立的 CLIProxyAPI 使用量持久化与可视化服务，定期同步 CLIProxyAPI 数据，存储到 SQLite，提供聚合 API，并内置使用量分析与统计仪表盘。
 
+> 本仓库内 `keeper/` 目录为**参考快照**（见 `keeper/README.md`，RIC-636），权威真源为 [luyuehm/enterprise-keeper](https://github.com/luyuehm/enterprise-keeper)。
+
 ### [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)
 
 面向 CLIProxyAPI 的完整管理中心，提供请求级监控和费用预估。CPA-Manager 可按账号、模型、渠道、延迟、状态和 token 用量追踪采集到的请求；支持可编辑模型价格与一键同步 LiteLLM 价格来估算费用；用 SQLite 持久化事件；并提供面向 Codex 账号池的批量巡检、配额识别、异常账号定位、清理建议与一键执行能力，适合多账号池的日常运维管理。

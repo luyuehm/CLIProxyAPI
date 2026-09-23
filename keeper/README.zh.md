@@ -27,6 +27,16 @@
 
 CPA Usage Keeper 是面向 [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) 的独立用量持久化与分析面板。它将 CPA 用量保存到 SQLite，自动拉取 CPA 配置和凭证数据，并提供用量、成本、请求健康、限额及模型/API 统计。
 
+> **快照拷贝，非真源（RIC-636）。** 本仓库内 `keeper/` 子树是**参考快照**，按需通过 Multica
+> 企业策略同步。**权威真源是 [luyuehm/enterprise-keeper](https://github.com/luyuehm/enterprise-keeper)**
+> （上游：[Willxup/cpa-usage-keeper](https://github.com/Willxup/cpa-usage-keeper)）。该拷贝
+> **刻意不完整、不可构建** —— `internal/repository/overviewstore/`、
+> `internal/service/tokenprocessor/`、部分 `internal/entities` 类型以及生成的 `web/dist/`
+> 等目录/文件仅在 enterprise-keeper 仓库中存在。因此在 `keeper/` 内执行
+> `go build ./...` / `go test ./...` **预期不会通过**，且**已被 monorepo CI 排除**
+> （根目录 `go build ./...` 会忽略该嵌套 Go module）。请勿把快照的构建失败当作回归，
+> 也不要在本仓库补齐缺失文件。Keeper 的开发与构建请使用 enterprise-keeper 仓库。
+
 ## 界面预览
 
 <p align="center">
