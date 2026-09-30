@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -260,6 +264,177 @@ func TestProxyHandler(t *testing.T) {
 	handler := p.Handler()
 	if handler == nil {
 		t.Fatal("handler should not be nil")
+	}
+}
+
+func TestProxyResumeTimeout(t *testing.T) {
+	src := &hangingResumeSource{}
+	p := NewProxy(src, Options{
+		KeepAlivePeriod: -1,
+		StallTimeout:    30 * time.Millisecond,
+		ResumeTimeout:   50 * time.Millisecond,
+		DetectStall:     true,
+	})
+	err := p.StreamTo(context.Background(), func(payload []byte) error {
+		return nil
+	})
+	var tm *ErrResumeTimeout
+	if !errors.As(err, &tm) {
+		t.Fatalf("expected *ErrResumeTimeout, got %v", err)
+	}
+	if tm.ResumeTimeout != 50*time.Millisecond {
+		t.Fatalf("expected ResumeTimeout 50ms, got %v", tm.ResumeTimeout)
+	}
+}
+
+// hangingResumeSource emits one frame then never returns on the resume path.
+// This mirrors a backup node whose re-establishment hangs (lost node, silent
+// TCP timeout) — the proxy must surface ErrResumeTimeout instead of freezing
+// the downstream stream forever.
+type hangingResumeSource struct{}
+
+func (h *hangingResumeSource) Start(ctx context.Context, resumeSeq int64) (Stream, error) {
+	if resumeSeq > 0 {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	out := make(chan Chunk)
+	go func() {
+		select {
+		case out <- Chunk{Payload: []byte("data: first\n\n"), Seq: 1}:
+		case <-ctx.Done():
+			close(out)
+			return
+		}
+		// Stall forever — no more chunks, never close.
+		<-ctx.Done()
+	}()
+	return &testStream{ch: out}, nil
+}
+
+// httpResumeSource behaves like the real SSE upstream: it pushes frames on
+// the open body, stalls for stallDur mid-stream on the initial connection
+// (simulating a network flap on the first node), and on the resume call
+// replays only the frames strictly after the delivered marker.
+type httpResumeSource struct {
+	chunks    [][]byte
+	stallIdx  int
+	stallDur  time.Duration
+	resumeSeq atomic.Int64
+}
+
+func (s *httpResumeSource) Start(ctx context.Context, resumeSeq int64) (Stream, error) {
+	if resumeSeq > 0 {
+		s.resumeSeq.Store(resumeSeq)
+	}
+	startIdx := int(resumeSeq)
+	out := make(chan Chunk)
+	go func() {
+		defer close(out)
+		for i := startIdx; i < len(s.chunks); i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			// Only the initial connection replays the network flap; the
+			// replacement stream must flow continuously from the breakpoint.
+			if resumeSeq == 0 && i == s.stallIdx {
+				timer := time.NewTimer(s.stallDur)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+			select {
+			case out <- Chunk{Payload: s.chunks[i], Seq: int64(i + 1)}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return &testStream{ch: out}, nil
+}
+
+// TestProxyHTTPResumeOnDisconnect proves the acceptance criterion end to end
+// over a real HTTP SSE connection: simulate a network flap (stall past the
+// detection window, recovery within 3s of the flap) and assert the client
+// receives every frame, in order, with no duplicated or corrupted bytes.
+func TestProxyHTTPResumeOnDisconnect(t *testing.T) {
+	chunks := [][]byte{
+		[]byte("data: {\"id\":\"a\",\"delta\":\"hello\"}\n\n"),
+		[]byte("data: {\"id\":\"b\",\"delta\":\" world\"}\n\n"),
+		[]byte("data: {\"id\":\"c\",\"delta\":\"!\"}\n\n"),
+		[]byte("data: {\"id\":\"d\",\"delta\":\"\"}\n\n"),
+		[]byte("data: [DONE]\n\n"),
+	}
+	src := &httpResumeSource{chunks: chunks, stallIdx: 1, stallDur: 600 * time.Millisecond}
+	p := NewProxy(src, Options{
+		KeepAlivePeriod: -1,
+		StallTimeout:    200 * time.Millisecond,
+		ResumeTimeout:   time.Second,
+		DetectStall:     true,
+	})
+
+	srv := httptest.NewServer(p.Handler())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL) //nolint:gosec // test server URL
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %q", ct)
+	}
+
+	var lines []string
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read SSE body: %v", err)
+	}
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "upstream resume") {
+		t.Fatal("missing resume marker; stall never detected")
+	}
+	// The flap strikes before the second frame, so the breakpoint is seq 1.
+	if got := src.resumeSeq.Load(); got != 1 {
+		t.Fatalf("expected resume from seq 1, got %d", got)
+	}
+	for _, chunk := range chunks {
+		data := strings.TrimSpace(string(chunk))
+		if !bytes.Contains([]byte(joined), []byte(data)) {
+			t.Fatalf("client missed frame %q (garbled or dropped after resume)", data)
+		}
+	}
+	// Assert each frame appears exactly once: no duplicates on replay.
+	for _, id := range []string{`"id":"a"`, `"id":"b"`, `"id":"c"`, `"id":"d"`} {
+		if n := strings.Count(joined, id); n != 1 {
+			t.Fatalf("frame %s appeared %d times; expected exactly once (no dupes)", id, n)
+		}
+	}
+}
+
+// TestProxyHTTPHandlerViaRecorder serves the resilient handler through an
+// httptest.ResponseRecorder so the SSE handler path is covered without a
+// live server.
+func TestProxyHTTPHandlerViaRecorder(t *testing.T) {
+	chunks := [][]byte{[]byte("data: hello\n\n"), []byte("data: [DONE]\n\n")}
+	src := newTestSource(chunks, nil)
+	p := NewProxy(src, Options{KeepAlivePeriod: -1, DetectStall: false, StallTimeout: time.Second})
+
+	handler := p.Handler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "hello") || !strings.Contains(body, "[DONE]") {
+		t.Fatalf("recorder received incomplete stream: %q", body)
 	}
 }
 

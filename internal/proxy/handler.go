@@ -15,6 +15,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -40,6 +41,23 @@ const (
 // ErrResumeUnavailable is returned when a requested breakpoint can no longer
 // be honored (buffered data was evicted or the backup node has no state).
 var ErrResumeUnavailable = errors.New("stream resume unavailable: breakpoint out of range")
+
+// ErrResumeTimeout is returned when a breakpoint resume attempt exceeds the
+// configured ResumeTimeout. It wraps the underlying source error when one is
+// available so callers can still distinguish "no state" from "too slow".
+type ErrResumeTimeout struct {
+	ResumeTimeout time.Duration
+	Cause         error
+}
+
+func (e *ErrResumeTimeout) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("stream resume timed out after %s: %v", e.ResumeTimeout, e.Cause)
+	}
+	return fmt.Sprintf("stream resume timed out after %s", e.ResumeTimeout)
+}
+
+func (e *ErrResumeTimeout) Unwrap() error { return e.Cause }
 
 // Chunk is one frame on a Stream.
 type Chunk struct {
@@ -162,7 +180,7 @@ func (p *Proxy) StreamTo(ctx context.Context, emit func([]byte) error) error {
 	}
 
 	buf := stream.NewStreamBuffer(p.opts.MaxBufferBytes)
-	current, err := p.start(ctx, 0)
+	current, err := p.start(ctx, 0, 0)
 	if err != nil {
 		return err
 	}
@@ -226,15 +244,35 @@ func (p *Proxy) StreamTo(ctx context.Context, emit func([]byte) error) error {
 	}
 }
 
-// start opens a stream. The resume timeout bounds only the initial
-// Source.Start call, not the returned stream's lifetime.
-func (p *Proxy) start(ctx context.Context, resumeSeq int64) (Stream, error) {
-	return p.source.Start(ctx, resumeSeq)
+// start opens a stream. The resume timeout bounds only the Source.Start call,
+// not the returned stream's lifetime.
+func (p *Proxy) start(ctx context.Context, resumeSeq, resumeTimeoutNanos int64) (Stream, error) {
+	resumeTimeout := time.Duration(resumeTimeoutNanos)
+	if resumeTimeout <= 0 {
+		return p.source.Start(ctx, resumeSeq)
+	}
+	type result struct {
+		stream Stream
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, err := p.source.Start(ctx, resumeSeq)
+		done <- result{stream: s, err: err}
+	}()
+	select {
+	case r := <-done:
+		return r.stream, r.err
+	case <-time.After(resumeTimeout):
+		return nil, &ErrResumeTimeout{ResumeTimeout: resumeTimeout}
+	}
 }
 
 // resume attempts a breakpoint resume from the delivered marker. The buffered
 // window is used only as the resume-capability record; the replacement stream
 // performs the actual replay so output stays contiguous with the emitted flow.
+// The attempt is bounded by ResumeTimeout so a hanging backup node cannot
+// freeze the downstream stream indefinitely.
 func (p *Proxy) resume(ctx context.Context, buf *stream.StreamBuffer, delivered int64, emit func([]byte) error) (Stream, error) {
 	p.logger.WithFields(log.Fields{
 		"delivered_seq":  delivered,
@@ -243,7 +281,7 @@ func (p *Proxy) resume(ctx context.Context, buf *stream.StreamBuffer, delivered 
 	if err := emit([]byte(": upstream resume\n\n")); err != nil {
 		return nil, err
 	}
-	return p.start(ctx, delivered)
+	return p.start(ctx, delivered, int64(p.opts.ResumeTimeout))
 }
 
 // stallTimer is a resettable one-shot timer.
