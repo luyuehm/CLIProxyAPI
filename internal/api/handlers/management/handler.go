@@ -287,9 +287,9 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 			provided = c.GetHeader("X-Management-Key")
 		}
 
-		allowed, statusCode, errMsg := h.AuthenticateManagementKey(clientIP, localClient, provided)
-		if !allowed {
-			c.AbortWithStatusJSON(statusCode, gin.H{"error": errMsg})
+		decision := h.authenticateManagementKey(clientIP, localClient, provided)
+		if decision.failure != nil {
+			decision.failure.abortRequest(c, clientIP, localClient, provided != "")
 			return
 		}
 		c.Next()
@@ -298,12 +298,32 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
+//
+// The returned message is the legacy English sentence, preserved verbatim for
+// non-HTTP callers (the Redis queue protocol prefix-matches it). HTTP callers
+// should use Middleware(), which returns the stable AuthReason* code instead.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
+	decision := h.authenticateManagementKey(clientIP, localClient, provided)
+	if decision.failure == nil {
+		return true, 0, ""
+	}
+	return false, decision.failure.Status, decision.failure.legacyMessage()
+}
+
+// authDecision is the outcome of one management key verification.
+type authDecision struct {
+	// failure is nil when the request is allowed.
+	failure *AuthFailure
+}
+
+// authenticateManagementKey is the single implementation behind Middleware()
+// and AuthenticateManagementKey().
+func (h *Handler) authenticateManagementKey(clientIP string, localClient bool, provided string) authDecision {
 	const maxFailures = 5
 	const banDuration = 30 * time.Minute
 
 	if h == nil {
-		return false, http.StatusForbidden, "remote management disabled"
+		return authDecision{failure: &authFailureRemoteDisabled}
 	}
 
 	cfg := h.cfg
@@ -325,9 +345,13 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	ai := h.failedAttempts[clientIP]
 	if ai != nil && !ai.blockedUntil.IsZero() {
 		if now.Before(ai.blockedUntil) {
-			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
+			remaining := ai.blockedUntil.Sub(now)
 			h.attemptsMu.Unlock()
-			return false, http.StatusForbidden, fmt.Sprintf("IP banned due to too many failed attempts. Try again in %s", remaining)
+			return authDecision{failure: &AuthFailure{
+				Status:     http.StatusForbidden,
+				Reason:     AuthReasonRateLimited,
+				RetryAfter: remaining,
+			}}
 		}
 		// Ban expired, reset state
 		ai.blockedUntil = time.Time{}
@@ -336,7 +360,7 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	h.attemptsMu.Unlock()
 
 	if !localClient && !allowRemote {
-		return false, http.StatusForbidden, "remote management disabled"
+		return authDecision{failure: &authFailureRemoteDisabled}
 	}
 
 	fail := func() {
@@ -365,36 +389,36 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	if secretHash == "" && envSecret == "" {
-		return false, http.StatusForbidden, "remote management key not set"
+		return authDecision{failure: &authFailureKeyNotConfigured}
 	}
 
 	if provided == "" {
 		fail()
-		return false, http.StatusUnauthorized, "missing management key"
+		return authDecision{failure: &authFailureMissingKey}
 	}
 
 	if localClient {
 		if lp := h.localPassword; lp != "" {
 			if subtle.ConstantTimeCompare([]byte(provided), []byte(lp)) == 1 {
 				reset()
-				return true, 0, ""
+				return authDecision{}
 			}
 		}
 	}
 
 	if envSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(envSecret)) == 1 {
 		reset()
-		return true, 0, ""
+		return authDecision{}
 	}
 
 	if secretHash == "" || bcrypt.CompareHashAndPassword([]byte(secretHash), []byte(provided)) != nil {
 		fail()
-		return false, http.StatusUnauthorized, "invalid management key"
+		return authDecision{failure: &authFailureInvalidKey}
 	}
 
 	reset()
 
-	return true, 0, ""
+	return authDecision{}
 }
 
 // persist saves the current in-memory config to disk.
