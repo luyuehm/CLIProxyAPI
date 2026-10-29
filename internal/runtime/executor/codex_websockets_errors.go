@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -27,6 +27,10 @@ func (e statusErrWithHeaders) Headers() http.Header {
 }
 
 func parseCodexWebsocketError(payload []byte) (error, bool) {
+	return parseCodexWebsocketErrorWithCooling(payload, false)
+}
+
+func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool) (error, bool) {
 	if len(payload) == 0 {
 		return nil, false
 	}
@@ -43,12 +47,25 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 
 	out := buildCodexWebsocketErrorPayload(payload, status)
 	headers := parseCodexWebsocketErrorHeaders(payload)
-	statusError := statusErr{code: status, msg: string(out), credentialScoped: isCodexUsageLimitError(out)}
+	isUsageLimit := isCodexUsageLimitError(out)
+	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(out)
+	statusError := statusErr{
+		code:               status,
+		msg:                string(out),
+		credentialScoped:   isUsageLimit && !modelLevelCooling,
+		transientRateLimit: transientCapacity && status == http.StatusTooManyRequests,
+	}
+	// Hint precedence: the quota body reset wins, then the connection-limit
+	// immediate-retry contract, then the generic Retry-After header.
 	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
 		statusError.retryAfter = retryAfter
 	} else if isCodexWebsocketConnectionLimitError(payload) {
 		retryAfter := time.Duration(0)
 		statusError.retryAfter = &retryAfter
+	} else if status == http.StatusTooManyRequests {
+		if retryAfter := parseRetryAfterHeader(headers, time.Now()); retryAfter != nil {
+			statusError.retryAfter = retryAfter
+		}
 	}
 	return statusErrWithHeaders{
 		statusErr: statusError,

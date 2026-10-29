@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
 )
 
 // Environment variables controlling the data-plane rate limiter and KEEPER

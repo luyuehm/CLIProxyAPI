@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/stream"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/stream"
 	log "github.com/sirupsen/logrus"
 )
 

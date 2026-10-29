@@ -3,8 +3,8 @@ package api
 import (
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/shadow"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/shadow"
 )
 
 // convertShadowConfig translates the YAML shadow configuration into the

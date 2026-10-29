@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/anomaly"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/anomaly"
 )
 
 // GetAnomalyStats returns anomaly detection statistics for all tracked principals.
