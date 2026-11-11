@@ -91,6 +91,10 @@ type Server struct {
 	// via WithContentFilterExportHandler. nil when content filter is disabled.
 	contentFilterExportHandler gin.HandlerFunc
 
+	// arbitrageStatusHandler is the RIC-2458 arbitration status endpoint,
+	// injected via WithArbitrageStatusHandler. nil when the channel is disabled.
+	arbitrageStatusHandler gin.HandlerFunc
+
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
@@ -194,6 +198,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 		contentFilterExportHandler:   optionState.contentFilterExportHandler,
+		arbitrageStatusHandler:       optionState.arbitrageStatusHandler,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))

@@ -50,6 +50,15 @@ func (s *Service) Run(ctx context.Context) error {
 	}()
 
 	usage.StartDefault(ctx)
+
+	// RIC-2458: start the arbitration decision puller once the auth manager and
+	// executors are live. It is nil when the channel is disabled, so this is a
+	// no-op for a default build.
+	if s.arbitrageRuntime != nil {
+		s.arbitrageRuntime.Start()
+		log.Info("arbitrage: forwarding-side decision consumer started")
+	}
+
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
@@ -232,6 +241,14 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	s.shutdownOnce.Do(func() {
 		if ctx == nil {
 			ctx = context.Background()
+		}
+
+		// RIC-2458: stop the arbitration puller and remove the runtime
+		// credentials it owns before the auth manager goes away, so a restart
+		// never inherits stale routing rows.
+		if s.arbitrageRuntime != nil {
+			s.arbitrageRuntime.Stop()
+			s.arbitrageRuntime = nil
 		}
 
 		s.homeLifecycleMu.Lock()
