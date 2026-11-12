@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/arbitrage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -58,6 +59,11 @@ type Service struct {
 
 	// serverOptions contains additional server configuration options.
 	serverOptions []api.ServerOption
+
+	// arbitrageRuntime is the RIC-2458 forwarding-side arbitration consumer.
+	// Nil when the channel is disabled, in which case the gateway routes exactly
+	// as an unconfigured build.
+	arbitrageRuntime *arbitrage.Runtime
 
 	// server is the HTTP API server instance.
 	server *api.Server

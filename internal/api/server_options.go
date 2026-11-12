@@ -32,6 +32,11 @@ type serverOptionConfig struct {
 	// import cycle) and registered under /v0/management/contentfilter/export
 	// so it rides the same management-key auth as the other management routes.
 	contentFilterExportHandler gin.HandlerFunc
+	// arbitrageStatusHandler is the RIC-2458 arbitration status endpoint. It is
+	// injected by internal/arbitrage (which imports this package) and registered
+	// inside the authenticated /v0/management group so it inherits the same
+	// management-key auth as every other management route.
+	arbitrageStatusHandler gin.HandlerFunc
 }
 
 // ServerOption customises HTTP server construction.
@@ -73,6 +78,16 @@ func WithMiddleware(mw ...gin.HandlerFunc) ServerOption {
 func WithContentFilterExportHandler(h gin.HandlerFunc) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.contentFilterExportHandler = h
+	}
+}
+
+// WithArbitrageStatusHandler injects the RIC-2458 arbitration status endpoint.
+// It is registered inside the authenticated /v0/management group; registering it
+// on the bare engine would expose routing topology and internal endpoints to any
+// caller that can reach the port.
+func WithArbitrageStatusHandler(h gin.HandlerFunc) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.arbitrageStatusHandler = h
 	}
 }
 

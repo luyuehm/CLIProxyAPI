@@ -6,9 +6,12 @@ package cliproxy
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/arbitrage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -18,6 +21,7 @@ import (
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	log "github.com/sirupsen/logrus"
 )
 
 // Builder constructs a Service instance with customizable providers.
@@ -320,7 +324,75 @@ func (b *Builder) Build() (*Service, error) {
 	if rlOpt := dataratelimit.ServerOption(); rlOpt != nil {
 		service.serverOptions = append(service.serverOptions, rlOpt)
 	}
+	// RIC-2458: forwarding-side consumer of KEEPER's cross-cloud arbitrage
+	// decisions. Polls GET /api/v1/arbitrage/decisions/delivery, keeps the
+	// model → Provider/Endpoint mapping in memory, and installs a model router
+	// host so the live upstream target follows the cheapest healthy Provider.
+	// Enabled via CPA_ARBITRAGE_ENABLED; returns nil (and a nil server option)
+	// when disabled or when no auth_ref credential resolver is configured, so
+	// the default build routes exactly as before.
+	service.arbitrageRuntime = arbitrage.Build(arbitrage.RuntimeOptions{
+		Config:  b.cfg,
+		Manager: coreManager,
+		// AuthRef values are management-plane reference names. The deployment
+		// supplies the resolver that maps them to local credentials; without it
+		// the channel stays off and every request keeps default routing.
+		Lookup: arbitrageCredentialLookupFromEnv(),
+		// Delivered endpoints decide where the operator's real provider key is
+		// sent, so they are validated against this policy before any credential
+		// is attached.
+		EndpointPolicy: arbitrage.EndpointPolicyFromEnv(),
+	})
+	if arbOpt := arbitrage.ServerOption(service.arbitrageRuntime); arbOpt != nil {
+		service.serverOptions = append(service.serverOptions, arbOpt)
+	}
+	// The status endpoint is mounted by internal/api inside the authenticated
+	// /v0/management group, never on the bare engine.
+	if statusOpt := arbitrage.StatusServerOption(service.arbitrageRuntime); statusOpt != nil {
+		service.serverOptions = append(service.serverOptions, statusOpt)
+	}
 	return service, nil
+}
+
+// arbitrageCredentialLookupFromEnv builds the AuthRef → credential resolver.
+//
+// The contract deliberately never ships key material, so the mapping lives in
+// the gateway's own environment: CPA_ARBITRAGE_AUTH_REFS is a comma-separated
+// list of "ref=apiKey" pairs (the same ref name configured as ProviderPrice
+// .AuthRef in KEEPER). Returning nil leaves the arbitrage channel disabled,
+// which is the safe default for a deployment that has not configured it.
+func arbitrageCredentialLookupFromEnv() arbitrage.CredentialLookup {
+	raw := strings.TrimSpace(os.Getenv(arbitrage.EnvAuthRefs))
+	if raw == "" {
+		return nil
+	}
+	credentials := make(map[string]arbitrage.Credential)
+	for index, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		ref, key, found := strings.Cut(entry, "=")
+		ref = strings.TrimSpace(ref)
+		key = strings.TrimSpace(key)
+		if !found || ref == "" || key == "" {
+			// A typo here silently leaves one provider on default routing, which
+			// is hard to diagnose, so say which entry was dropped by position.
+			log.Warnf("%s: ignoring entry %d (expected ref=apiKey)", arbitrage.EnvAuthRefs, index+1)
+			continue
+		}
+		if _, duplicate := credentials[ref]; duplicate {
+			log.Warnf("%s: duplicate auth ref %q (last entry wins)", arbitrage.EnvAuthRefs, ref)
+		}
+		credentials[ref] = arbitrage.Credential{APIKey: key}
+	}
+	if len(credentials) == 0 {
+		return nil
+	}
+	return func(authRef string) (arbitrage.Credential, bool) {
+		credential, ok := credentials[strings.TrimSpace(authRef)]
+		return credential, ok
+	}
 }
 
 func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {

@@ -96,6 +96,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/logs", s.mgmt.GetLogs)
 		mgmt.DELETE("/logs", s.mgmt.DeleteLogs)
 		mgmt.GET("/contentfilter/export", s.serveContentFilterExport)
+		// RIC-2458 arbitration status: read-only snapshot of the delivered
+		// decisions and freshness. Registered inside this authenticated group so
+		// routing topology and internal endpoints are never world-readable.
+		mgmt.GET("/arbitrage/status", s.serveArbitrageStatus)
 		mgmt.GET("/request-error-logs", s.mgmt.GetRequestErrorLogs)
 		mgmt.GET("/request-error-logs/:name", s.mgmt.DownloadRequestErrorLog)
 		mgmt.GET("/request-log-by-id/:id", s.mgmt.GetRequestLogByID)
@@ -214,6 +218,18 @@ func (s *Server) serveContentFilterExport(c *gin.Context) {
 		return
 	}
 	s.contentFilterExportHandler(c)
+}
+
+// serveArbitrageStatus dispatches the RIC-2458 arbitration status endpoint to
+// the handler injected via WithArbitrageStatusHandler. Without an injected
+// handler (channel disabled) the route reports 404 so callers can tell the
+// feature is off rather than misread an empty snapshot.
+func (s *Server) serveArbitrageStatus(c *gin.Context) {
+	if s == nil || s.arbitrageStatusHandler == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	s.arbitrageStatusHandler(c)
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
