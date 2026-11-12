@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/policies"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/routeboundary"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -350,6 +351,20 @@ func (b *Builder) Build() (*Service, error) {
 	// /v0/management group, never on the bare engine.
 	if statusOpt := arbitrage.StatusServerOption(service.arbitrageRuntime); statusOpt != nil {
 		service.serverOptions = append(service.serverOptions, statusOpt)
+	}
+	// RIC-2532-A: KEEPER → CPA forced route-boundary channel
+	// (internal/routeboundary). Polls GET /api/v1/admin/api/route-boundaries,
+	// hot-reloads the per-key provider allow-lists, mounts the admission
+	// middleware, and installs the execution provider-pool gate so automatic
+	// fallback can never leave a key's boundary. Enabled via
+	// CPA_ROUTE_BOUNDARY_ENABLED; returns nil when disabled, so a no-op by
+	// default.
+	service.routeBoundaryRuntime = routeboundary.Build(coreManager)
+	if rbMwOpt := service.routeBoundaryRuntime.MiddlewareServerOption(); rbMwOpt != nil {
+		service.serverOptions = append(service.serverOptions, rbMwOpt)
+	}
+	if rbExecOpt := service.routeBoundaryRuntime.ExecutionServerOption(); rbExecOpt != nil {
+		service.serverOptions = append(service.serverOptions, rbExecOpt)
 	}
 	return service, nil
 }

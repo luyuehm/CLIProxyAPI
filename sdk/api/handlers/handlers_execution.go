@@ -57,6 +57,12 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
+	// RIC-2532-A: narrow the pool to the caller's KEEPER route boundary
+	// before execution; a nil gate leaves it untouched.
+	providers, errMsg = h.applyRouteBoundary(ctx, normalizedModel, providers, routeDecision, execOptions)
+	if errMsg != nil {
+		return nil, nil, errMsg
+	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
@@ -97,6 +103,13 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
+		// RIC-2532-A: when the request ran inside a KEEPER route boundary
+		// and the pool could not be served, surface the contract's 503
+		// route_boundary_violation instead of the raw credential error.
+		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			lifecycle.completeError(ctx, boundaryErr)
+			return nil, nil, boundaryErr
+		}
 		errMsg := executionErrorMessage(err)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
@@ -127,6 +140,12 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		return nil, nil, errMsg
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(handlerType, providers)
+	// RIC-2532-A: narrow the pool to the caller's KEEPER route boundary
+	// before execution; a nil gate leaves it untouched.
+	providers, errMsg = h.applyRouteBoundary(ctx, normalizedModel, providers, routeDecision, execOptions)
+	if errMsg != nil {
+		return nil, nil, errMsg
+	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
@@ -165,6 +184,12 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
+		// RIC-2532-A: surface the contract's 503 route_boundary_violation
+		// when a boundary-constrained pool could not be served.
+		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			lifecycle.completeError(ctx, boundaryErr)
+			return nil, nil, boundaryErr
+		}
 		errMsg := executionErrorMessage(err)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg

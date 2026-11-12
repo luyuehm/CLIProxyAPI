@@ -59,6 +59,14 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Info("arbitrage: forwarding-side decision consumer started")
 	}
 
+	// RIC-2532-A: start the route-boundary puller so the KEEPER delivery
+	// endpoint is consumed once the service is live. Nil when the channel
+	// is disabled, so this is a no-op for a default build.
+	if s.routeBoundaryRuntime != nil {
+		s.routeBoundaryRuntime.Start()
+		log.Info("routeboundary: KEEPER boundary puller started")
+	}
+
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
@@ -249,6 +257,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.arbitrageRuntime != nil {
 			s.arbitrageRuntime.Stop()
 			s.arbitrageRuntime = nil
+		}
+
+		// RIC-2532-A: stop the route-boundary puller and drain the audit
+		// writer before the auth manager goes away.
+		if s.routeBoundaryRuntime != nil {
+			s.routeBoundaryRuntime.Stop()
+			s.routeBoundaryRuntime = nil
 		}
 
 		s.homeLifecycleMu.Lock()
