@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/policies"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tracer"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -350,6 +351,16 @@ func (b *Builder) Build() (*Service, error) {
 	// /v0/management group, never on the bare engine.
 	if statusOpt := arbitrage.StatusServerOption(service.arbitrageRuntime); statusOpt != nil {
 		service.serverOptions = append(service.serverOptions, statusOpt)
+	}
+	// RIC-2508: data-plane auto-trace channel. Reports one trace span per
+	// gateway model call to KEEPER's trace ingest endpoint, so applications
+	// that call models through the gateway get end-to-end tracing with zero
+	// business code changes. Enabled via CPA_TRACE_ENABLED (or the
+	// LANGSMITH_TRACING alias); off by default, so an unconfigured build
+	// runs exactly as before with no reporting goroutine.
+	if tracerRuntime, active := tracer.Build(); active {
+		service.tracerRuntime = tracerRuntime
+		service.serverOptions = append(service.serverOptions, api.WithMiddleware(tracer.Middleware()))
 	}
 	return service, nil
 }

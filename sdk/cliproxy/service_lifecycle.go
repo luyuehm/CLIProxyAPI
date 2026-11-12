@@ -59,6 +59,14 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Info("arbitrage: forwarding-side decision consumer started")
 	}
 
+	// RIC-2508: start the auto-trace reporter worker. The usage dispatcher
+	// (started above) fans usage records into the registered tracer
+	// plugin; the reporter's own worker delivers them to KEEPER off-path.
+	// Nil when the channel is disabled.
+	if s.tracerRuntime != nil {
+		s.tracerRuntime.Start()
+	}
+
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
@@ -363,6 +371,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+
+		// RIC-2508: stop the auto-trace reporter after the usage dispatcher
+		// has drained, so the final records reach its queue before the
+		// bounded best-effort flush. The flush is deadline-capped, so a
+		// down KEEPER cannot hold up process shutdown.
+		if s.tracerRuntime != nil {
+			s.tracerRuntime.Stop()
+			s.tracerRuntime = nil
+		}
 	})
 	return shutdownErr
 }
