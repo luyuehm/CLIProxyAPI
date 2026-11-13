@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tracer"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -64,6 +65,11 @@ type Service struct {
 	// Nil when the channel is disabled, in which case the gateway routes exactly
 	// as an unconfigured build.
 	arbitrageRuntime *arbitrage.Runtime
+
+	// tracerRuntime is the RIC-2508 auto-trace reporting channel.
+	// Nil when the channel is disabled, in which case the gateway runs
+	// exactly as before with no trace reporting.
+	tracerRuntime *tracer.Runtime
 
 	// server is the HTTP API server instance.
 	server *api.Server

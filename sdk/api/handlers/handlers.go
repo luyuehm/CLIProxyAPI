@@ -19,6 +19,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/tracer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	coresession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
@@ -443,6 +444,14 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		} else if requestID = logging.GetGinRequestID(c); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
+	}
+	// RIC-2508: lift the per-request W3C trace context (seeded by the
+	// tracer middleware on c.Request.Context()) into the execution
+	// context, so the usage records — and with them the auto trace
+	// reports — carry the adopted or generated trace identity. No-op
+	// when the channel is off (no trace context present).
+	if traceCtx := tracer.TraceContextFromContext(requestCtx); traceCtx != nil {
+		parentCtx = tracer.WithTraceContext(parentCtx, traceCtx)
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)
 
