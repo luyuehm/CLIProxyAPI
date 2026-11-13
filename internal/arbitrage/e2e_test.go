@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 // RIC-2458 end-to-end acceptance: the live upstream target must follow KEEPER's
@@ -232,5 +233,96 @@ func TestReconcilerRegistersModelForSelection(t *testing.T) {
 
 	if providers := registry.GetGlobalRegistry().GetModelProviders("ric2458-probe-model"); len(providers) == 0 {
 		t.Fatal("the arbitrated model must be registered so auth selection can route to it")
+	}
+}
+
+// Regression for the dropped-credential desync: a decision whose endpoint the
+// reconciler refuses (or whose key is empty) must NOT be pinned by the router
+// just because its auth_ref sits in the static pool. Before the fix the router
+// pinned the provider on the pool check alone, so the request hard-failed with
+// auth_not_found instead of falling back to default routing.
+func TestDecisionWithRefusedEndpointDeclinesRoute(t *testing.T) {
+	now := time.Now()
+	manager := coreauth.NewManager(newInMemoryAuthStore(), nil, nil)
+
+	store := arbitrage.NewStore()
+	// The pool entry resolves, but the delivered endpoint is plaintext http on
+	// the default (https-only) policy, so the reconciler refuses to attach a
+	// credential to it.
+	store.Apply([]arbitrage.Decision{{
+		Model: "m1", Provider: "refused",
+		Endpoint: "http://internal.example.com/v1", AuthRef: "refused-ref",
+	}}, now, 30, now, 3)
+
+	lookup := func(ref string) (arbitrage.Credential, bool) {
+		if ref == "refused-ref" {
+			return arbitrage.Credential{APIKey: "sk"}, true
+		}
+		return arbitrage.Credential{}, false
+	}
+	reconciler := arbitrage.NewReconciler(manager, store, lookup)
+	reconciler.Reconcile(context.Background())
+	t.Cleanup(reconciler.Release)
+
+	if got := reconciler.AppliedCount(); got != 0 {
+		t.Fatalf("applied = %d, want 0 (a refused endpoint must not get a credential)", got)
+	}
+
+	// The router must decline the route, exactly as it does for an unknown model.
+	host := arbitrage.NewRouterHost(store, func() time.Time { return now }, reconciler.ProviderKeyFor)
+	if resp, ok := host.RouteModel(context.Background(), pluginapi.ModelRouteRequest{RequestedModel: "m1"}); ok {
+		t.Fatalf("route was handled with target %q, want declined for a dropped credential", resp.Target)
+	}
+}
+
+// Availability first: when the reconciler dropped a decision, but an operator
+// static credential for the same provider exists, the router still pins that
+// provider and the request is served by the fallback credential.
+func TestRefusedDecisionFallsBackToStaticCredential(t *testing.T) {
+	upstream := newUpstreamRecorder(t)
+	now := time.Now()
+	manager := coreauth.NewManager(newInMemoryAuthStore(), nil, nil)
+
+	// Operator-configured static credential under the provider name.
+	staticID := "static-refused-provider"
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID: staticID, Provider: "refused", Label: "refused",
+		Status: coreauth.StatusActive,
+		Attributes: map[string]string{
+			"base_url":     upstream.server.URL,
+			"api_key":      "sk-static",
+			"provider_key": "refused",
+		},
+		Metadata: map[string]any{},
+	}); err != nil {
+		t.Fatalf("register static credential: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(staticID, "refused", []*registry.ModelInfo{{ID: "m1", Object: "model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(staticID) })
+
+	store := arbitrage.NewStore()
+	store.Apply([]arbitrage.Decision{{
+		Model: "m1", Provider: "refused",
+		Endpoint: "http://internal.example.com/v1", AuthRef: "refused-ref",
+	}}, now, 30, now, 3)
+	lookup := func(ref string) (arbitrage.Credential, bool) {
+		return arbitrage.Credential{APIKey: "sk"}, ref == "refused-ref"
+	}
+	reconciler := arbitrage.NewReconciler(manager, store, lookup)
+	reconciler.Reconcile(context.Background())
+	t.Cleanup(reconciler.Release)
+	if got := reconciler.AppliedCount(); got != 0 {
+		t.Fatalf("applied = %d, want 0 (the runtime credential must stay refused)", got)
+	}
+
+	// The pin now resolves via the static credential, so the request is served
+	// by it and still reaches the operator's upstream.
+	host := arbitrage.NewRouterHost(store, func() time.Time { return now }, reconciler.ProviderKeyFor)
+	resp, ok := host.RouteModel(context.Background(), pluginapi.ModelRouteRequest{RequestedModel: "m1"})
+	if !ok {
+		t.Fatal("route must be handled via the static fallback credential")
+	}
+	if resp.Target != "refused" {
+		t.Fatalf("target = %q, want refused", resp.Target)
 	}
 }
