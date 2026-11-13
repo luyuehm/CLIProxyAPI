@@ -13,6 +13,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/routeboundary"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -64,6 +65,11 @@ type Service struct {
 	// Nil when the channel is disabled, in which case the gateway routes exactly
 	// as an unconfigured build.
 	arbitrageRuntime *arbitrage.Runtime
+
+	// routeBoundaryRuntime is the RIC-2532-A KEEPER forced route-boundary
+	// consumer (internal/routeboundary). Nil when the channel is disabled,
+	// in which case the gateway routes exactly as an unconfigured build.
+	routeBoundaryRuntime *routeboundary.Runtime
 
 	// server is the HTTP API server instance.
 	server *api.Server

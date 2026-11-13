@@ -318,6 +318,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
+	// RIC-2532-A: narrow the pool to the caller's KEEPER route boundary
+	// before execution; a nil gate leaves it untouched.
+	providers, errMsg = h.applyRouteBoundary(ctx, normalizedModel, providers, routeDecision, execOptions)
+	if errMsg != nil {
+		errChan := make(chan *interfaces.ErrorMessage, 1)
+		errChan <- errMsg
+		close(errChan)
+		return nil, nil, errChan
+	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
@@ -361,6 +370,15 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
+		// RIC-2532-A: surface the contract's 503 route_boundary_violation
+		// when a boundary-constrained pool could not be served.
+		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			lifecycle.completeError(ctx, boundaryErr)
+			errChan := make(chan *interfaces.ErrorMessage, 1)
+			errChan <- boundaryErr
+			close(errChan)
+			return nil, nil, errChan
+		}
 		errMsg := executionErrorMessage(err)
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)

@@ -308,6 +308,30 @@ func setGenerateMetadata(meta map[string]any, rawJSON []byte) {
 // BaseAPIHandler contains the handlers for API endpoints.
 // It holds a pool of clients to interact with the backend service and manages
 // load balancing, client selection, and configuration.
+// RouteBoundaryGate narrows the execution provider pool to the caller's
+// delivered KEEPER route boundary (RIC-2532-A, internal/routeboundary). It
+// is installed through the pre-reserved WithRouterConfigurator hook, the
+// same extension point as the model router host, so no upstream handler or
+// route file is modified.
+type RouteBoundaryGate interface {
+	// ApplyBoundary enforces the caller's boundary on the execution pool.
+	// providers is the pool after entry-protocol adjustment; modelName the
+	// normalized upstream model; forced and routed the explicit provider
+	// selections (the executor option and the model router's choice). It
+	// returns the pool to execute and a violation error to surface before
+	// any upstream request is made (nil on success). A nil gate or an
+	// unconfigured channel leaves the pool untouched.
+	ApplyBoundary(ctx context.Context, providers []string, modelName, forced, routed string) ([]string, *interfaces.ErrorMessage)
+	// TranslateExecutionError rewrites a post-execution credential-
+	// availability failure (the in-boundary pool could not be served, e.g.
+	// every allowed provider cooling down) into the contract's 503
+	// route_boundary_violation for boundary-constrained requests. It
+	// returns nil when the request was unconstrained or the failure is not
+	// a credential-availability one, in which case the caller keeps the
+	// original error.
+	TranslateExecutionError(ctx context.Context, execErr error, modelName string) *interfaces.ErrorMessage
+}
+
 type BaseAPIHandler struct {
 	// AuthManager manages auth lifecycle and execution in the new architecture.
 	AuthManager *coreauth.Manager
@@ -321,6 +345,11 @@ type BaseAPIHandler struct {
 	// ModelRouterHost optionally routes matching requests to a plugin executor, the router's own
 	// executor, or a built-in provider before model-to-provider resolution and auth selection.
 	ModelRouterHost PluginModelRouterHost
+
+	// RouteBoundaryGate optionally narrows the execution provider pool to the
+	// caller's delivered KEEPER route boundary. Nil leaves execution routing
+	// exactly as before (the default build).
+	RouteBoundaryGate RouteBoundaryGate
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.
@@ -371,12 +400,29 @@ func (h *BaseAPIHandler) SetModelRouterHost(host PluginModelRouterHost) {
 	h.ModelRouterHost = host
 }
 
+// SetRouteBoundaryGate configures the optional KEEPER route-boundary
+// execution gate.
+func (h *BaseAPIHandler) SetRouteBoundaryGate(gate RouteBoundaryGate) {
+	if h == nil {
+		return
+	}
+	if isNilRouteBoundaryGate(gate) {
+		h.RouteBoundaryGate = nil
+		return
+	}
+	h.RouteBoundaryGate = gate
+}
+
 func isNilPluginInterceptorHost(host PluginInterceptorHost) bool {
 	return isNilInterface(host)
 }
 
 func isNilPluginModelRouterHost(host PluginModelRouterHost) bool {
 	return isNilInterface(host)
+}
+
+func isNilRouteBoundaryGate(gate RouteBoundaryGate) bool {
+	return isNilInterface(gate)
 }
 
 func isNilInterface(value any) bool {
