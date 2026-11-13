@@ -213,6 +213,7 @@ func (a *Audit) deliver(event AuditEvent) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CPA-Management-Key", a.opts.ManagementKey)
+	req.Header.Set("X-CPA-Usage-Keeper-Request", "fetch") // KEEPER request-intent middleware requires it on write endpoints
 
 	client := a.opts.HTTPClient
 	if client == nil {
