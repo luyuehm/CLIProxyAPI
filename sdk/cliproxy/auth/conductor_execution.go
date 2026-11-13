@@ -500,6 +500,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if auth != nil && redisqueue.IsKeyBlocked(auth.EnsureIndex()) {
 			tried[auth.ID] = struct{}{}
 			lastErr = &Error{Code: "insufficient_quota", Message: "quota exhausted for this key"}
+			reportRouteEvent(opts, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeFailed, resultErrorFromError(lastErr))
 			if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 				return cliproxyexecutor.Response{}, lastErr
 			}
@@ -536,6 +537,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 			m.MarkResult(execCtx, result)
+			reportRouteEvent(pickOpts, provider, auth, stateModel, cliproxyexecutor.RouteOutcomePreparationError, result.Error)
 			lastErr = errPrepare
 			continue
 		}
@@ -622,6 +624,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
 				applyRequestScopedActionToResult(action, okAction, &result)
+				reportRouteEvent(execOpts, provider, auth, resultModel, cliproxyexecutor.RouteOutcomeFailed, result.Error)
 				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
@@ -647,6 +650,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			reportRouteEvent(execOpts, provider, auth, resultModel, cliproxyexecutor.RouteOutcomeSuccess, nil)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
@@ -719,6 +723,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if auth != nil && redisqueue.IsKeyBlocked(auth.EnsureIndex()) {
 			tried[auth.ID] = struct{}{}
 			lastErr = &Error{Code: "insufficient_quota", Message: "quota exhausted for this key"}
+			reportRouteEvent(opts, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeFailed, resultErrorFromError(lastErr))
 			if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 				return cliproxyexecutor.Response{}, lastErr
 			}
@@ -997,6 +1002,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if auth != nil && redisqueue.IsKeyBlocked(auth.EnsureIndex()) {
 			tried[auth.ID] = struct{}{}
 			lastErr = &Error{Code: "insufficient_quota", Message: "quota exhausted for this key"}
+			reportRouteEvent(opts, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeFailed, resultErrorFromError(lastErr))
 			if !homeMode && maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
 				return nil, lastErr
 			}
@@ -1111,6 +1117,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			} else {
 				m.MarkResult(execCtx, result)
 			}
+			reportRouteEvent(pickOpts, provider, auth, stateModel, cliproxyexecutor.RouteOutcomePreparationError, result.Error)
 			lastErr = errPrepare
 			if homeMode {
 				roundTiming.Observe(lastErr)
@@ -1171,6 +1178,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
 			}
+			reportRouteEvent(execOpts, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeFailed, resultErrorFromError(errStream))
 			if selection != nil {
 				excludeAuth := shouldExcludeHomeAuthAfterStreamError(execCtx, auth, errStream)
 				if homeSameAuthRetries[auth.ID] > 0 {
@@ -1217,6 +1225,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
+		reportRouteEvent(execOpts, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeSuccess, nil)
 		if selection != nil {
 			if m.retainHomeWebsocketSelection(ctx, opts, routeModel, selection) {
 				return wrapHomeStream(ctx, streamResult, nil, releaseAttempt), nil

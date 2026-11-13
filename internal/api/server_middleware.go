@@ -28,6 +28,9 @@ var corsExposedResponseHeaders = []string{
 	"Retry-After",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
+	// X-Route-Detail carries the ?debug=true routing audit for streaming
+	// responses; browser clients must be able to read it.
+	"X-Route-Detail",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
