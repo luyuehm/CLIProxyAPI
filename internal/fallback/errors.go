@@ -68,8 +68,13 @@ func (e *coolingError) Error() string {
 	return fmt.Sprintf("%s until %s", e.Reason(), e.until.Format(time.RFC3339))
 }
 
-// reasonCode maps an attempt error to a stable log/metric code.
-func reasonCode(err error) string {
+// reasonCode maps an attempt error to a bounded log/metric code built from
+// the provider key and status only. It deliberately never returns raw error
+// text: net/http error strings carry full URLs, and Gemini-style keys ride
+// in query strings, so raw text in a "stable" code would leak credential
+// material into metrics labels and API responses. Unwrap only known types;
+// anything else degrades to a generic per-provider code.
+func reasonCode(err error, provider string) string {
 	if err == nil {
 		return "success"
 	}
@@ -81,5 +86,25 @@ func reasonCode(err error) string {
 	if errors.As(err, &ce) {
 		return ce.Reason()
 	}
-	return err.Error()
+	// Sentinel errors carry their stable code without the "fallback:"
+	// prefix, so metric labels stay snake_case like the rest.
+	if errors.Is(err, ErrNoCandidates) {
+		return "no_candidates"
+	}
+	if errors.Is(err, ErrCostLimitExceeded) {
+		return "cost_limit_exceeded"
+	}
+	if errors.Is(err, ErrQualityFloorUnsat) {
+		return "quality_floor_unsatisfiable"
+	}
+	if errors.Is(err, ErrAllProvidersCooling) {
+		return "all_providers_cooling"
+	}
+	if errors.Is(err, ErrTimeoutBudgetExhausted) {
+		return "timeout_budget_exhausted"
+	}
+	if provider != "" {
+		return "provider_" + provider + "_error"
+	}
+	return "attempt_error"
 }

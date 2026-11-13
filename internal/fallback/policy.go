@@ -87,6 +87,27 @@ var (
 	ErrTimeoutBudgetExhausted = errors.New("fallback: timeout_budget_exhausted")
 )
 
+// preferredEligible filters the preferred candidate (index 0) alone. It is
+// the request-level-disable path: a filtered preferred provider must never be
+// silently replaced by the next candidate, so the constraint that excluded
+// the preferred provider is the outcome, not a promotion.
+func (p Policy) preferredEligible() ([]Candidate, error) {
+	if len(p.Candidates) == 0 {
+		return nil, ErrNoCandidates
+	}
+	c := p.Candidates[0]
+	if c.Provider == "" {
+		return nil, ErrNoCandidates
+	}
+	if p.QualityFloor > 0 && c.Quality > 0 && c.Quality < p.QualityFloor {
+		return nil, ErrQualityFloorUnsat
+	}
+	if p.CostLimit > 0 && c.CostUSD > 0 && c.CostUSD > p.CostLimit {
+		return nil, ErrCostLimitExceeded
+	}
+	return []Candidate{c}, nil
+}
+
 // eligible filters the chain by the quality floor and the cost limit and
 // reports which constraint (if any) made the whole chain unusable.
 //

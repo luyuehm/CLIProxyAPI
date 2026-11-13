@@ -9,18 +9,27 @@ import (
 )
 
 // ExecuteFunc runs one attempt against a provider and reports whether the
-// attempt failed. Provider/protocol level errors (503, rate limit...) must
-// be returned as err; a nil err means the attempt succeeded.
+// attempt failed. Provider/protocol level errors (503, rate limit...)
+// should be wrapped in *ProviderError so the orchestrator can emit a stable
+// machine-readable reason code (e.g. "provider_A_503") in logs and
+// FallbackRecords; an untyped error degrades to a generic bounded code
+// ("provider_A_error"), never to the raw error text. A nil err means the
+// attempt succeeded.
 type ExecuteFunc func(ctx context.Context, provider, model string) error
 
 // Outcome is the structured result of one orchestrator run.
 type Outcome struct {
 	// Success is true when a provider returned nil.
 	Success bool
-	// Provider is the provider that produced the final result, or "" when
-	// no attempt ran.
+	// Planned is true when the outcome is a dry-run plan: no attempt
+	// executed and Success must not be read as "served".
+	Planned bool
+	// Provider is the provider that produced the final result (or the
+	// planned provider in dry-run mode), or "" when no attempt ran.
 	Provider string
-	// Fallbacks records every switch that happened, in order.
+	// Fallbacks records the decision trail: one record per committed
+	// provider switch, plus the terminal record (constraint violation,
+	// refused start, or final failure/health-skip).
 	Fallbacks []FallbackRecord
 	// Err is the final error when Success is false: a sentinel (policy
 	// violation), a wrapped attempt error, or the raw failure of the last
@@ -28,27 +37,32 @@ type Outcome struct {
 	Err error
 }
 
-// FallbackRecord is one observability entry: why the orchestrator switched
-// providers and what it cost.
+// FallbackRecord is one observability entry: which provider was attempted
+// (or why a switch was refused) and what it cost.
 type FallbackRecord struct {
 	// From and To are the provider switch endpoints; From is "" when the
 	// record describes the very first attempt.
 	From, To string
-	// Reason is a stable machine-readable code, e.g.
+	// Reason is a bounded machine-readable code built from the provider
+	// key and status only (never raw error text), e.g.
 	// "provider_a_503", "provider_a_cooled_down", "timeout_budget_exhausted".
 	Reason string
-	// Detail carries a human-readable explanation; it never contains
-	// credential material.
+	// Detail carries a human-readable explanation. For attempts it echoes
+	// the integrator's error text, which the orchestrator does not
+	// sanitize: treat Detail as log-only, never as a metric label or API
+	// field.
 	Detail string
-	// ExtraLatency is the wall time spent on the failed attempt that this
-	// record follows, i.e. the cost of the fallback so far.
+	// ExtraLatency is the wall time from run start to this record, i.e.
+	// the cost the fallback has so far.
 	ExtraLatency time.Duration
 	// At is the event timestamp from the orchestrator's clock.
 	At time.Time
 }
 
-// Orchestrator is the automatic fallback engine. It is safe for concurrent
-// use; state lives in the optional HealthWindow.
+// Orchestrator is the automatic fallback engine. Concurrent Run invocations
+// are safe; state lives in the optional HealthWindow. Configure
+// Policy/Health/Now/Log before the first Run and do not reconfigure while a
+// Run is in flight.
 type Orchestrator struct {
 	// Policy is the declarative chain and constraints.
 	Policy Policy
@@ -103,36 +117,50 @@ func (o *Orchestrator) SetHealth(h *HealthWindow) {
 
 // Run executes the request across the candidate chain until one succeeds or
 // all constraints are exhausted. opts.FallbackEnabled=false restricts the run
-// to the preferred candidate and returns its error as-is.
+// to the preferred candidate only: a preferred candidate excluded by a hard
+// constraint is the terminal result, never a silent promotion to the next
+// candidate.
+//
+// Concurrent Run invocations are safe: Run only reads the orchestrator's
+// fields and resolves nil Log/Now into local defaults without writing them
+// back. Configure Policy/Health/Now/Log before the first Run.
 func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts RequestOptions, execute ExecuteFunc) Outcome {
-	log := o.Log.WithField("component", "fallback")
+	now := o.Now
+	if now == nil {
+		now = time.Now
+	}
+	logEntry := o.Log
+	if logEntry == nil {
+		logEntry = logrus.NewEntry(logrus.New())
+	}
+	log := logEntry.WithField("component", "fallback")
 	log = log.WithField("model", requestedModel)
 
+	// Eligibility split by mode: a full chain when fallback is enabled,
+	// the preferred candidate alone when it is disabled (B1: no promotion).
 	chain, hardErr := o.Policy.eligible()
+	if !opts.FallbackEnabled() {
+		chain, hardErr = o.Policy.preferredEligible()
+	}
 	if hardErr != nil {
 		log.WithError(hardErr).Info("fallback: policy hard constraint")
 		out := Outcome{Err: hardErr}
-		if hardErr == ErrNoCandidates || hardErr == ErrCostLimitExceeded || hardErr == ErrQualityFloorUnsat {
-			out.Fallbacks = append(out.Fallbacks, FallbackRecord{
-				Reason: hardErr.Error(),
-				Detail: hardErr.Error(),
-				At:     o.Now(),
-			})
-		}
+		out.Fallbacks = append(out.Fallbacks, FallbackRecord{
+			Reason: reasonCode(hardErr, ""),
+			Detail: hardErr.Error(),
+			At:     now(),
+		})
 		return out
 	}
 
-	// Request-level disable: only the preferred candidate may run.
-	if !opts.FallbackEnabled() {
-		chain = chain[:1]
-	}
-
 	var (
-		outcome   Outcome
-		lastEvent error // last executed failure, or a health-skip description
-		executed  bool  // at least one attempt actually ran
-		start     = o.Now()
-		attempt   int
+		outcome      Outcome
+		pendingFrom  Candidate // candidate the next switch will move FROM
+		pendingEvent error     // the failure / health-skip that justifies it
+		lastAttempt  Candidate // last candidate actually executed
+		lastEvent    error     // the executed failure on lastAttempt
+		executed     bool      // at least one attempt actually ran
+		start        = now()
 	)
 
 	deadline := time.Time{}
@@ -141,72 +169,60 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 	}
 
 	for i, c := range chain {
-		attempt++
-		if i > 0 {
-			// The switch itself is the observability record: the event on
-			// From (its failure, or a health skip) is what triggered the
-			// move to To.
-			reason := ""
-			detail := "switch"
-			if lastEvent != nil {
-				reason = reasonCode(lastEvent)
-				detail = lastEvent.Error()
-			}
-			record := FallbackRecord{
-				From:         chain[i-1].Provider,
-				To:           c.Provider,
-				Reason:       reason,
-				Detail:       detail,
-				ExtraLatency: o.Now().Sub(start),
-				At:           o.Now(),
-			}
-			outcome.Fallbacks = append(outcome.Fallbacks, record)
-			log.WithFields(logrus.Fields{
-				"fallback_from": record.From,
-				"fallback_to":   record.To,
-				"reason":        record.Reason,
-			}).Info("fallback: switching provider")
-		}
-
-		// Health gate: a cooled-down provider is skipped without a call.
+		// Health gate: a cooled-down provider is skipped without a call. The
+		// skip becomes the pending event that justifies the next switch.
 		if o.Health != nil {
-			if cooled, until := o.Health.CooledDown(c.Provider, o.Now()); cooled {
-				lastEvent = &coolingError{provider: c.Provider, until: until}
+			if cooled, until := o.Health.CooledDown(c.Provider, now()); cooled {
+				pendingFrom, pendingEvent = c, &coolingError{provider: c.Provider, until: until}
 				log.WithField("cooldown_until", until).Debug("fallback: provider cooling")
 				if !opts.FallbackEnabled() {
 					// single-candidate mode: a cooled preferred provider is terminal
-					outcome.Err = lastEvent
+					outcome.Err = pendingEvent
+					outcome.Fallbacks = append(outcome.Fallbacks, FallbackRecord{
+						From:   c.Provider,
+						To:     "",
+						Reason: reasonCode(pendingEvent, c.Provider),
+						Detail: pendingEvent.Error(),
+						At:     now(),
+					})
 					return outcome
 				}
 				continue
 			}
 		}
 
-		// Budget gate: no attempt may start past the deadline.
-		if !deadline.IsZero() && !o.Now().Before(deadline) {
+		// Budget gate: no attempt may start past the deadline. A refused
+		// start is a terminal record, not a switch — the pending switch was
+		// never committed.
+		if !deadline.IsZero() && !now().Before(deadline) {
 			outcome.Err = ErrTimeoutBudgetExhausted
 			outcome.Fallbacks = append(outcome.Fallbacks, FallbackRecord{
-				From:         providerAt(chain, i-1),
-				To:           c.Provider,
+				From:         c.Provider,
+				To:           "",
 				Reason:       "timeout_budget_exhausted",
-				Detail:       fmt.Sprintf("budget %s reached before attempt %d", o.Policy.TimeoutBudget, attempt),
-				ExtraLatency: o.Now().Sub(start),
-				At:           o.Now(),
+				Detail:       fmt.Sprintf("budget %s reached before attempting %s", o.Policy.TimeoutBudget, c.Provider),
+				ExtraLatency: now().Sub(start),
+				At:           now(),
 			})
 			log.Warn("fallback: timeout budget exhausted")
 			return outcome
 		}
 
-		// Dry run stops planning here: no attempt executes.
+		// Commit to c: flush the switch that moved us here, then (in dry-run)
+		// stop before executing.
+		if i > 0 {
+			o.flushSwitch(&outcome, pendingFrom, c, pendingEvent, start, now, log)
+		}
 		if o.dryRun {
+			outcome.Planned = true
 			outcome.Success = true
 			outcome.Provider = c.Provider
 			outcome.Fallbacks = append(outcome.Fallbacks, FallbackRecord{
-				From:   providerAt(chain, i-1),
+				From:   c.Provider,
 				To:     c.Provider,
 				Reason: "dry_run_plan",
-				Detail: fmt.Sprintf("would attempt %s as step %d", c.Provider, attempt),
-				At:     o.Now(),
+				Detail: fmt.Sprintf("would attempt %s as step %d", c.Provider, i+1),
+				At:     now(),
 			})
 			log.WithField("planned_provider", c.Provider).Debug("fallback: dry-run plan")
 			return outcome
@@ -218,13 +234,14 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 		}
 
 		executed = true
-		attemptStart := o.Now()
+		lastAttempt = c
+		attemptStart := now()
 		err := execute(ctx, c.Provider, model)
-		elapsed := o.Now().Sub(attemptStart)
+		elapsed := now().Sub(attemptStart)
 
 		if err == nil {
 			if o.Health != nil {
-				o.Health.ObserveSuccess(c.Provider, o.Now())
+				o.Health.ObserveSuccess(c.Provider, now())
 			}
 			outcome.Success = true
 			outcome.Provider = c.Provider
@@ -232,17 +249,25 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 		}
 
 		if o.Health != nil {
-			o.Health.ObserveFailure(c.Provider, o.Now())
+			o.Health.ObserveFailure(c.Provider, now())
 		}
 		lastEvent = err
+		// This failure now justifies the next switch out of c.
+		pendingFrom, pendingEvent = c, err
 		log.WithFields(logrus.Fields{
 			"provider":   c.Provider,
-			"reason":     reasonCode(err),
+			"reason":     reasonCode(err, c.Provider),
 			"attempt_ms": elapsed.Milliseconds(),
-			"attempts":   attempt,
 		}).Warn("fallback: provider attempt failed")
 		if !opts.FallbackEnabled() {
 			outcome.Err = err
+			outcome.Fallbacks = append(outcome.Fallbacks, FallbackRecord{
+				From:   c.Provider,
+				To:     "",
+				Reason: reasonCode(err, c.Provider),
+				Detail: err.Error(),
+				At:     now(),
+			})
 			log.WithError(err).Info("fallback: request-level disable, returning error")
 			return outcome
 		}
@@ -254,24 +279,43 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 		lastEvent = ErrAllProvidersCooling
 	}
 	outcome.Err = lastEvent
-	// Termination record: the last candidate was attempted (or health-
-	// skipped) and no further candidate remains in the chain.
+	// Termination record for the final consideration.
 	outcome.Fallbacks = append(outcome.Fallbacks, FallbackRecord{
-		From:   providerAt(chain, len(chain)-1),
+		From:   providerName(lastAttempt),
 		To:     "",
-		Reason: reasonCode(lastEvent),
+		Reason: reasonCode(lastEvent, providerName(lastAttempt)),
 		Detail: lastEvent.Error(),
-		At:     o.Now(),
+		At:     now(),
 	})
 	log.WithError(outcome.Err).Warn("fallback: chain exhausted")
 	return outcome
 }
 
-// providerAt returns chain[i].Provider with a safe "" for i == -1 (first
-// attempt, which has no "from").
-func providerAt(chain []Candidate, i int) string {
-	if i < 0 || i >= len(chain) {
-		return ""
+// flushSwitch records the move from `from` to `to`, justified by event (the
+// failure or health skip on `from`). It takes the resolved clock and logger
+// so a zero-value orchestrator stays race-free under concurrent Run.
+func (o *Orchestrator) flushSwitch(outcome *Outcome, from, to Candidate, event error, start time.Time, now func() time.Time, log *logrus.Entry) {
+	reason, detail := "", "switch"
+	if event != nil {
+		reason = reasonCode(event, from.Provider)
+		detail = event.Error()
 	}
-	return chain[i].Provider
+	record := FallbackRecord{
+		From:         from.Provider,
+		To:           to.Provider,
+		Reason:       reason,
+		Detail:       detail,
+		ExtraLatency: now().Sub(start),
+		At:           now(),
+	}
+	outcome.Fallbacks = append(outcome.Fallbacks, record)
+	log.WithFields(logrus.Fields{
+		"fallback_from": record.From,
+		"fallback_to":   record.To,
+		"reason":        record.Reason,
+	}).Info("fallback: switching provider")
 }
+
+// providerName returns the candidate's provider key, or "" for the zero
+// candidate (nothing was attempted yet).
+func providerName(c Candidate) string { return c.Provider }

@@ -77,11 +77,17 @@ func (h *HealthWindow) ObserveFailure(provider string, at time.Time) {
 		// what makes the backoff steps bounded and flapping-resistant.
 		st.bursts++
 		st.stamps = st.stamps[:0]
-		step := st.bursts - 1
-		if step > 20 {
-			step = 20 // base << 20 already exceeds any sane cap
+		cooldown := h.base
+		for step := st.bursts - 1; step > 0; step-- {
+			// Double with an overflow guard: test against max/2 so a huge
+			// operator-supplied base cannot wrap negative (a negative
+			// cooldown would fail-open the health gate).
+			if cooldown > h.max/2 {
+				cooldown = h.max
+				break
+			}
+			cooldown *= 2
 		}
-		cooldown := h.base << step
 		if cooldown > h.max {
 			cooldown = h.max
 		}

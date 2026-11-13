@@ -75,9 +75,9 @@ func (c Config) ToPolicy() (Policy, *HealthWindow, error) {
 	return p, health, nil
 }
 
-// budget parses TimeoutBudget, defaulting to disabled (0). A malformed value
-// is an error: a silently dropped constraint would defeat the hard-budget
-// guarantee the issue requires.
+// budget parses TimeoutBudget, defaulting to disabled (0). A malformed or
+// negative value is an error: a silently dropped constraint would defeat
+// the hard-budget guarantee the issue requires.
 func (c Config) budget() (time.Duration, error) {
 	s := strings.TrimSpace(c.TimeoutBudget)
 	if s == "" || s == "0" {
@@ -86,6 +86,9 @@ func (c Config) budget() (time.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		return 0, fmt.Errorf("fallback: parse timeout-budget %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("fallback: negative timeout-budget %q", s)
 	}
 	return d, nil
 }
