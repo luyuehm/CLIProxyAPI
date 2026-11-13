@@ -114,7 +114,8 @@ const (
 )
 
 // qualityTable is the frozen (TaskType, LengthBucket) -> Quality contract
-// table. Values are audited in TestQualityTableInvariants; changing them
+// table. Literal values are pinned by TestQualityTableValues; range and
+// monotonicity are guarded by TestQualityTableInvariants. Changing values
 // requires bumping ContractVersion.
 var qualityTable = map[TaskType]map[LengthBucket]float64{
 	TaskTypeDefault:  {LengthBucketShort: 0.30, LengthBucketMedium: 0.40, LengthBucketLong: 0.55},

@@ -249,6 +249,11 @@ func TestQualityTableValues(t *testing.T) {
 		t.Fatalf("qualityTable has %d task rows, want %d (frozen set)", len(qualityTable), len(want))
 	}
 	for task, tiers := range want {
+		// A row may not carry an extra or missing bucket key (lengthBucket
+		// returns exactly short/medium/long).
+		if got := qualityTable[task]; len(got) != len(tiers) {
+			t.Fatalf("qualityTable[%q] has %d buckets, want frozen %d", task, len(got), len(tiers))
+		}
 		for bucket, q := range tiers {
 			if got := qualityTable[task][bucket]; got != q {
 				t.Fatalf("qualityTable[%q][%q] = %v, want frozen %v", task, bucket, got, q)
@@ -397,5 +402,45 @@ func TestModelLevelRulesFrozen(t *testing.T) {
 		if modelLevelRules[i] != want[i] {
 			t.Fatalf("modelLevelRules[%d] = %#v, want frozen %#v", i, modelLevelRules[i], want[i])
 		}
+	}
+	// Pin the rule-kind tag strings so a flip (e.g. rulePrefix "prefix" ->
+	// anything else) cannot silently turn every prefix rule into a substring
+	// rule and re-tier the whole table.
+	if rulePrefix != "prefix" || ruleContains != "contains" {
+		t.Fatalf("rule-kind tags drifted: rulePrefix=%q ruleContains=%q", rulePrefix, ruleContains)
+	}
+}
+
+// TestQualityClassifyThresholds pins the three R3/R4 threshold constants at
+// their exact boundary values. classifyTask reads simpleMaxChars (400),
+// analysisMultiTurnMinUserTurns (3) and analysisLongDocTokens (8000 est.
+// tokens); without edge pinning, a one-off drift (e.g. 400 -> 401) would flip
+// a request's task type and ship green. Inputs avoid R1/R2 (no fence/code
+// markers, "a"*n) so only the length/turn thresholds decide the class.
+func TestQualityClassifyThresholds(t *testing.T) {
+	// simpleMaxChars: 400 chars / 2 user turns -> simple; 401 -> not simple.
+	if got := classifyTask(strings.Repeat("a", 400), 2, 400); got != TaskTypeSimple {
+		t.Fatalf("simpleMaxChars lower edge: %d chars -> %q, want %q", 400, got, TaskTypeSimple)
+	}
+	if got := classifyTask(strings.Repeat("a", 401), 2, 401); got == TaskTypeSimple {
+		t.Fatalf("simpleMaxChars upper edge: 401 chars still classified %q, want not simple", got)
+	}
+
+	// analysisMultiTurnMinUserTurns: 3 user turns -> analysis; 2 -> not analysis.
+	shortText := strings.Repeat("a", 100)
+	if got := classifyTask(shortText, 3, 100); got != TaskTypeAnalysis {
+		t.Fatalf("multi-turn lower edge: 3 user turns -> %q, want %q", got, TaskTypeAnalysis)
+	}
+	if got := classifyTask(shortText, 2, 100); got == TaskTypeAnalysis {
+		t.Fatalf("multi-turn boundary: 2 user turns classified %q, want not analysis", got)
+	}
+
+	// analysisLongDocTokens: 8000 est. tokens (32000 chars) -> analysis;
+	// 7999 (31996 chars) -> not analysis.
+	if got := classifyTask(strings.Repeat("a", 32000), 1, 32000); got != TaskTypeAnalysis {
+		t.Fatalf("long-doc lower edge: 8000 est. tokens -> %q, want %q", got, TaskTypeAnalysis)
+	}
+	if got := classifyTask(strings.Repeat("a", 31996), 1, 31996); got == TaskTypeAnalysis {
+		t.Fatalf("long-doc boundary: 7999 est. tokens classified %q, want not analysis", got)
 	}
 }

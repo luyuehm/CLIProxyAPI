@@ -176,22 +176,25 @@ The gate command below covers every current guard in the package; if a new
 guard is added, extend the first line's regex so it stays in scope.
 
 ```
-go test ./internal/modelrouting/... -run 'TestQuality|TestScore|TestModelLevel'   # all guards
-go test -race ./internal/modelrouting/...                                          # determinism under concurrency
-go build ./...                                                                     # compile
-gofmt -l internal/modelrouting/                                                    # no diff
+go test -count=1 ./internal/modelrouting/... -run 'TestQuality|TestScore|TestModelLevel'   # all guards
+go test -count=1 -race ./internal/modelrouting/...                                          # determinism under concurrency
+go build ./...                                                                               # compile
+gofmt -l internal/modelrouting/                                                              # no diff
 ```
 
 Key guards: `TestScoreDeterministic` (acceptance 1), `TestScoreCodeTask`
 (acceptance 2, asserts frozen contract value), `TestScoreLongDocument`
 (acceptance 3), `TestScoreBoundaryInputs` (acceptance 4),
-`TestQualityTableValues` (pins the twelve frozen Quality literals AND the
-capability tier each implies, so silent table or threshold drift fails hard),
+`TestQualityTableValues` (pins the twelve frozen Quality literals, the
+capability tier each implies, and each row's bucket-key set, so silent table
+or threshold drift fails hard), `TestQualityClassifyThresholds` (pins the
+three R3/R4 threshold constants — simpleMaxChars / analysisMultiTurnMinUserTurns
+/ analysisLongDocTokens — at their exact boundary values),
 `TestQualityTableInvariants` + `TestQualityThresholds` (range/monotonicity +
 threshold bands), `TestModelLevelMapping` (sampled name → tier mapping),
-`TestModelLevelRulesFrozen` (pins every entry of the `modelLevelRules` tier
-table structurally, so a tier flip or reordering hard-fails even when no
-sampled name exercises the rule).
+`TestModelLevelRulesFrozen` (pins all 32 `modelLevelRules` entries
+structurally plus the rule-kind tag strings, so a tier flip, reorder, or
+kind-tag drift hard-fails even when no sampled name exercises the rule).
 
 ## 8. Versioning
 
