@@ -232,6 +232,36 @@ func TestQualityTableInvariants(t *testing.T) {
 	}
 }
 
+// TestQualityTableValues pins the twelve frozen (TaskType, LengthBucket) ->
+// Quality literals from the contract table. Without this, a silent table edit
+// would pass every other guard (which compare against the live table) and the
+// documented gate command; pinning the literals makes any value drift a hard
+// test failure.
+func TestQualityTableValues(t *testing.T) {
+	// Frozen contract v1 values (quality_score.md section 4.3).
+	want := map[TaskType]map[LengthBucket]float64{
+		TaskTypeDefault:  {LengthBucketShort: 0.30, LengthBucketMedium: 0.40, LengthBucketLong: 0.55},
+		TaskTypeSimple:   {LengthBucketShort: 0.30, LengthBucketMedium: 0.35, LengthBucketLong: 0.50},
+		TaskTypeCode:     {LengthBucketShort: 0.45, LengthBucketMedium: 0.55, LengthBucketLong: 0.70},
+		TaskTypeAnalysis: {LengthBucketShort: 0.50, LengthBucketMedium: 0.65, LengthBucketLong: 0.80},
+	}
+	if len(qualityTable) != len(want) {
+		t.Fatalf("qualityTable has %d task rows, want %d (frozen set)", len(qualityTable), len(want))
+	}
+	for task, tiers := range want {
+		for bucket, q := range tiers {
+			if got := qualityTable[task][bucket]; got != q {
+				t.Fatalf("qualityTable[%q][%q] = %v, want frozen %v", task, bucket, got, q)
+			}
+			// Also pin the capability tier the frozen value implies, so a
+			// threshold-band drift is caught together with a table drift.
+			if lvl := (QualityScore{Quality: q}).RequiredLevel(); lvl == 0 {
+				t.Fatalf("qualityTable[%q][%q] -> Quality %v yields no capability level", task, bucket, q)
+			}
+		}
+	}
+}
+
 // TestQualityThresholds pins the Quality -> capability band cuts.
 func TestQualityThresholds(t *testing.T) {
 	cases := []struct {

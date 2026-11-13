@@ -172,17 +172,23 @@ same input always agree (verified by the double-run assertion in
 
 ## 7. Verification (contract guard)
 
+The gate command must cover every key guard below, so it runs the full
+package suite (all tests, not just a name prefix):
+
 ```
-go test ./internal/modelrouting/... -run 'TestQuality|TestScore'   # all green, includes double-run determinism
-go build ./...                                                       # compile
-gofmt -l internal/modelrouting/                                      # no diff
+go test ./internal/modelrouting/... -run 'TestQuality|TestScore|TestModelLevel'   # all green
+go test -race ./internal/modelrouting/...                                          # determinism under concurrency
+go build ./...                                                                     # compile
+gofmt -l internal/modelrouting/                                                    # no diff
 ```
 
 Key guards: `TestScoreDeterministic` (acceptance 1), `TestScoreCodeTask`
 (acceptance 2, asserts frozen contract value), `TestScoreLongDocument`
 (acceptance 3), `TestScoreBoundaryInputs` (acceptance 4),
-`TestQualityTableInvariants` + `TestQualityThresholds` (tables/thresholds
-frozen), `TestModelLevelMapping` (name → tier table frozen).
+`TestQualityTableValues` (pins the twelve frozen table literals so silent
+value drift fails hard), `TestQualityTableInvariants` + `TestQualityThresholds`
+(range/monotonicity + threshold bands), `TestModelLevelMapping` (name → tier
+table frozen).
 
 ## 8. Versioning
 

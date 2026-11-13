@@ -86,13 +86,15 @@ type QualityScore struct {
 
 // Frozen scoring constants (see quality_score.md, do not tune ad hoc).
 const (
-	// qualityThresholdStandard: Quality <= 0.35 is satisfied by LevelLite.
+	// qualityThresholdStandard: upper edge of the LevelLite band — Quality
+	// at/below 0.35 is satisfied by LevelLite.
 	qualityThresholdStandard = 0.35
-	// qualityThresholdAdvanced: Quality in (0.35, 0.55] needs LevelStandard;
-	// (0.55, 0.75] needs LevelAdvanced.
+	// qualityThresholdAdvanced: upper edge of the LevelStandard band — Quality
+	// above 0.35 and at/below 0.55 needs LevelStandard.
 	qualityThresholdAdvanced = 0.55
-	// qualityThresholdFrontier: Quality in (0.55, 0.75] needs LevelAdvanced;
-	// above 0.75 needs LevelFrontier.
+	// qualityThresholdFrontier: upper edge of the LevelAdvanced band — Quality
+	// above 0.55 and at/below 0.75 needs LevelAdvanced; above 0.75 needs
+	// LevelFrontier.
 	qualityThresholdFrontier = 0.75
 
 	// bucketShortMaxTokens / bucketMediumMaxTokens are the length-tier cuts.
