@@ -253,10 +253,22 @@ func TestQualityTableValues(t *testing.T) {
 			if got := qualityTable[task][bucket]; got != q {
 				t.Fatalf("qualityTable[%q][%q] = %v, want frozen %v", task, bucket, got, q)
 			}
-			// Also pin the capability tier the frozen value implies, so a
-			// threshold-band drift is caught together with a table drift.
-			if lvl := (QualityScore{Quality: q}).RequiredLevel(); lvl == 0 {
-				t.Fatalf("qualityTable[%q][%q] -> Quality %v yields no capability level", task, bucket, q)
+		}
+	}
+	// Also pin the capability tier each frozen value implies, so a
+	// threshold-band drift is caught together with a table drift. Tiers are
+	// derived from RequiredLevel()'s bands (<=0.35 Lite, <=0.55 Standard,
+	// <=0.75 Advanced, >0.75 Frontier).
+	wantLevel := map[TaskType]map[LengthBucket]CapabilityLevel{
+		TaskTypeDefault:  {LengthBucketShort: LevelLite, LengthBucketMedium: LevelStandard, LengthBucketLong: LevelStandard},
+		TaskTypeSimple:   {LengthBucketShort: LevelLite, LengthBucketMedium: LevelLite, LengthBucketLong: LevelStandard},
+		TaskTypeCode:     {LengthBucketShort: LevelStandard, LengthBucketMedium: LevelStandard, LengthBucketLong: LevelAdvanced},
+		TaskTypeAnalysis: {LengthBucketShort: LevelStandard, LengthBucketMedium: LevelAdvanced, LengthBucketLong: LevelFrontier},
+	}
+	for task, tiers := range wantLevel {
+		for bucket, lvl := range tiers {
+			if got := (QualityScore{Quality: qualityTable[task][bucket]}).RequiredLevel(); got != lvl {
+				t.Fatalf("qualityTable[%q][%q] = %v -> RequiredLevel %v, want %v", task, bucket, qualityTable[task][bucket], got, lvl)
 			}
 		}
 	}
@@ -332,5 +344,58 @@ func TestModelLevelMapping(t *testing.T) {
 	}
 	if MeetsLevel("claude-haiku-4-5-20251001", LevelStandard) {
 		t.Fatal("lite model must not satisfy standard tier")
+	}
+}
+
+// TestModelLevelRulesFrozen pins the entire model-tier table structurally.
+//
+// TestModelLevelMapping probes a sample of names, but that leaves most
+// modelLevelRules entries (and the substring catch-alls) as the only thing a
+// silent edit could drift against. This test asserts every entry's
+// (kind, match, level) and the rule count, so any tier flip, reordering, or
+// added/removed rule — even for a rule no sample name exercises — hard-fails
+// the documented gate.
+func TestModelLevelRulesFrozen(t *testing.T) {
+	want := []modelLevelRule{
+		{rulePrefix, "claude-fable", LevelFrontier},
+		{rulePrefix, "claude-opus-4-6", LevelFrontier},
+		{rulePrefix, "claude-opus-4-7", LevelFrontier},
+		{rulePrefix, "claude-opus-4-8", LevelFrontier},
+		{rulePrefix, "claude-opus-5", LevelFrontier},
+		{rulePrefix, "gpt-6", LevelFrontier},
+		{rulePrefix, "gemini-3.1-pro-low", LevelAdvanced},
+		{rulePrefix, "gemini-3.1-pro", LevelFrontier},
+		{rulePrefix, "gemini-3-pro", LevelFrontier},
+		{rulePrefix, "kimi-k3", LevelFrontier},
+		{rulePrefix, "claude-opus", LevelAdvanced},
+		{ruleContains, "opus", LevelAdvanced},
+		{rulePrefix, "gemini-2.5-pro", LevelAdvanced},
+		{rulePrefix, "gpt-5.5", LevelAdvanced},
+		{rulePrefix, "gpt-5.6", LevelAdvanced},
+		{rulePrefix, "gpt-oss-120b", LevelAdvanced},
+		{rulePrefix, "kimi-k2", LevelAdvanced},
+		{rulePrefix, "grok-4", LevelAdvanced},
+		{ruleContains, "pro", LevelAdvanced},
+		{ruleContains, "flash-lite", LevelLite},
+		{ruleContains, "haiku", LevelLite},
+		{ruleContains, "-mini", LevelLite},
+		{ruleContains, "-fast", LevelLite},
+		{ruleContains, "lite", LevelLite},
+		{ruleContains, "sonnet", LevelStandard},
+		{ruleContains, "flash", LevelStandard},
+		{ruleContains, "claude", LevelStandard},
+		{ruleContains, "gemini", LevelStandard},
+		{ruleContains, "gpt", LevelStandard},
+		{ruleContains, "kimi", LevelStandard},
+		{ruleContains, "grok", LevelStandard},
+		{ruleContains, "codex", LevelStandard},
+	}
+	if len(modelLevelRules) != len(want) {
+		t.Fatalf("modelLevelRules has %d rules, want frozen %d", len(modelLevelRules), len(want))
+	}
+	for i := range want {
+		if modelLevelRules[i] != want[i] {
+			t.Fatalf("modelLevelRules[%d] = %#v, want frozen %#v", i, modelLevelRules[i], want[i])
+		}
 	}
 }

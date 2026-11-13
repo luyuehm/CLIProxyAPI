@@ -172,11 +172,11 @@ same input always agree (verified by the double-run assertion in
 
 ## 7. Verification (contract guard)
 
-The gate command must cover every key guard below, so it runs the full
-package suite (all tests, not just a name prefix):
+The gate command below covers every current guard in the package; if a new
+guard is added, extend the first line's regex so it stays in scope.
 
 ```
-go test ./internal/modelrouting/... -run 'TestQuality|TestScore|TestModelLevel'   # all green
+go test ./internal/modelrouting/... -run 'TestQuality|TestScore|TestModelLevel'   # all guards
 go test -race ./internal/modelrouting/...                                          # determinism under concurrency
 go build ./...                                                                     # compile
 gofmt -l internal/modelrouting/                                                    # no diff
@@ -185,10 +185,13 @@ gofmt -l internal/modelrouting/                                                 
 Key guards: `TestScoreDeterministic` (acceptance 1), `TestScoreCodeTask`
 (acceptance 2, asserts frozen contract value), `TestScoreLongDocument`
 (acceptance 3), `TestScoreBoundaryInputs` (acceptance 4),
-`TestQualityTableValues` (pins the twelve frozen table literals so silent
-value drift fails hard), `TestQualityTableInvariants` + `TestQualityThresholds`
-(range/monotonicity + threshold bands), `TestModelLevelMapping` (name → tier
-table frozen).
+`TestQualityTableValues` (pins the twelve frozen Quality literals AND the
+capability tier each implies, so silent table or threshold drift fails hard),
+`TestQualityTableInvariants` + `TestQualityThresholds` (range/monotonicity +
+threshold bands), `TestModelLevelMapping` (sampled name → tier mapping),
+`TestModelLevelRulesFrozen` (pins every entry of the `modelLevelRules` tier
+table structurally, so a tier flip or reordering hard-fails even when no
+sampled name exercises the rule).
 
 ## 8. Versioning
 
