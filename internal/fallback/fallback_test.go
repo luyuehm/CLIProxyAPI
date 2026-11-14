@@ -456,3 +456,163 @@ func reasonOf(err error) string {
 	}
 	return err.Error()
 }
+
+// Scenario: require_private with no eligible private endpoint → the run fails
+// with ErrNoPrivateEndpoint and no provider call is made (not even public
+// ones), so the gateway can map this to HTTP 503 + code NO_PRIVATE_ENDPOINT.
+func TestRequirePrivateNoEndpointIsHard(t *testing.T) {
+	exec := &fakeExec{}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"},
+			{Provider: "B"},
+		},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{RequirePrivate: true}, exec.run)
+
+	if out.Success {
+		t.Fatal("outcome.Success = true, want false")
+	}
+	if !errors.Is(out.Err, fallback.ErrNoPrivateEndpoint) {
+		t.Fatalf("final error = %v, want ErrNoPrivateEndpoint", out.Err)
+	}
+	if exec.executed != 0 {
+		t.Fatalf("attempts = %d, want 0 (no public provider may be called)", exec.executed)
+	}
+	if !out.PrivateOnly {
+		t.Fatal("outcome.PrivateOnly = false, want true (maps to the response header)")
+	}
+	if len(out.Fallbacks) == 0 || out.Fallbacks[0].Reason != "fallback: no_private_endpoint" {
+		t.Fatalf("records = %+v, want a no_private_endpoint record", out.Fallbacks)
+	}
+}
+
+// Scenario: require_private with a private endpoint in the chain → only the
+// private candidate is attempted; the preferred public one is never called,
+// and the run succeeds on the private provider.
+func TestRequirePrivateSelectsPrivateOnly(t *testing.T) {
+	exec := &fakeExec{}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"}, // public preferred — must be skipped
+			{Provider: "B", Private: true},
+		},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{RequirePrivate: true}, exec.run)
+
+	if !out.Success || out.Provider != "B" {
+		t.Fatalf("outcome = %+v, want success on B (the private endpoint)", out)
+	}
+	if len(exec.calls) != 1 || exec.calls[0] != "B" {
+		t.Fatalf("attempts = %v, want exactly [B] (public A must never be called)", exec.calls)
+	}
+	if !out.PrivateOnly {
+		t.Fatal("outcome.PrivateOnly = false, want true")
+	}
+}
+
+// Scenario: require_private + a private endpoint that fails → the run must
+// not fall back to the public candidate even when it is later in the chain.
+func TestRequirePrivateNoPublicFallback(t *testing.T) {
+	exec := &fakeExec{errors: map[string]error{"B": httpErr("B", 503)}}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"},
+			{Provider: "B", Private: true},
+			{Provider: "C"},
+		},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{RequirePrivate: true}, exec.run)
+
+	if out.Success {
+		t.Fatal("outcome.Success = true, want false (private B failed and no public may serve)")
+	}
+	if len(exec.calls) != 1 || exec.calls[0] != "B" {
+		t.Fatalf("attempts = %v, want exactly [B] (no public fallback)", exec.calls)
+	}
+	if !errors.Is(out.Err, exec.errors["B"]) {
+		t.Fatalf("final error = %v, want the private provider's error", out.Err)
+	}
+	if !out.PrivateOnly {
+		t.Fatal("outcome.PrivateOnly = false, want true")
+	}
+}
+
+// Scenario: require_private left unset → original routing behavior is
+// unchanged: public candidates are eligible and no boundary error can fire.
+func TestRequirePrivateDefaultUnchanged(t *testing.T) {
+	exec := &fakeExec{}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"},
+			{Provider: "B", Private: true},
+		},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{}, exec.run)
+
+	if !out.Success || out.Provider != "A" {
+		t.Fatalf("outcome = %+v, want success on preferred A (default path unchanged)", out)
+	}
+	if out.PrivateOnly {
+		t.Fatal("outcome.PrivateOnly = true, want false when the flag is unset")
+	}
+}
+
+// The boundary is dominant: a private candidate excluded by the cost limit
+// still reports the cost constraint (the chain held a private endpoint),
+// while a chain with no private endpoint reports ErrNoPrivateEndpoint.
+func TestRequirePrivateConstraintPrecedence(t *testing.T) {
+	// No private candidate at all, cost limit otherwise satisfied → boundary wins.
+	exec := &fakeExec{}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A", CostUSD: 0.001},
+		},
+		CostLimit: 0.01,
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{RequirePrivate: true}, exec.run)
+	if !errors.Is(out.Err, fallback.ErrNoPrivateEndpoint) {
+		t.Fatalf("final error = %v, want ErrNoPrivateEndpoint (no private endpoint exists)", out.Err)
+	}
+
+	// A private candidate exists but exceeds the cost limit → the cost
+	// constraint is the dominant unmet requirement, not the boundary.
+	policy2 := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "B", Private: true, CostUSD: 0.10},
+		},
+		CostLimit: 0.01,
+	}
+	o2 := fallback.NewOrchestrator(policy2, nil)
+	out2 := o2.Run(context.Background(), "m", fallback.RequestOptions{RequirePrivate: true}, exec.run)
+	if !errors.Is(out2.Err, fallback.ErrCostLimitExceeded) {
+		t.Fatalf("final error = %v, want ErrCostLimitExceeded (private candidate held but over budget)", out2.Err)
+	}
+}
+
+// A dry run with require_private must plan only private candidates and make
+// no calls at all.
+func TestRequirePrivateDryRunPlansPrivate(t *testing.T) {
+	exec := &fakeExec{}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"},
+			{Provider: "B", Private: true},
+			{Provider: "C", Private: true},
+		},
+	}
+	o := fallback.NewOrchestrator(policy, nil).WithDryRun()
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{RequirePrivate: true}, exec.run)
+
+	if !out.Success || out.Provider != "B" {
+		t.Fatalf("dry-run outcome = %+v, want planned provider B (first private)", out)
+	}
+	if exec.executed != 0 {
+		t.Fatalf("attempts = %d, want 0 (dry run makes no calls)", exec.executed)
+	}
+}

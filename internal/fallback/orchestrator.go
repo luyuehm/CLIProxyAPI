@@ -26,6 +26,10 @@ type Outcome struct {
 	// violation), a wrapped attempt error, or the raw failure of the last
 	// eligible attempt.
 	Err error
+	// PrivateOnly is true when the request set RequirePrivate; the
+	// gateway maps it to the x-openrouter-private-only response header.
+	// No public provider is ever called on such a run.
+	PrivateOnly bool
 }
 
 // FallbackRecord is one observability entry: why the orchestrator switched
@@ -108,11 +112,11 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 	log := o.Log.WithField("component", "fallback")
 	log = log.WithField("model", requestedModel)
 
-	chain, hardErr := o.Policy.eligible()
+	chain, hardErr := o.Policy.eligible(opts.RequirePrivate)
 	if hardErr != nil {
 		log.WithError(hardErr).Info("fallback: policy hard constraint")
-		out := Outcome{Err: hardErr}
-		if hardErr == ErrNoCandidates || hardErr == ErrCostLimitExceeded || hardErr == ErrQualityFloorUnsat {
+		out := Outcome{Err: hardErr, PrivateOnly: opts.RequirePrivate}
+		if hardErr == ErrNoCandidates || hardErr == ErrCostLimitExceeded || hardErr == ErrQualityFloorUnsat || hardErr == ErrNoPrivateEndpoint {
 			out.Fallbacks = append(out.Fallbacks, FallbackRecord{
 				Reason: hardErr.Error(),
 				Detail: hardErr.Error(),
@@ -134,6 +138,9 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 		start     = o.Now()
 		attempt   int
 	)
+	if opts.RequirePrivate {
+		outcome.PrivateOnly = true
+	}
 
 	deadline := time.Time{}
 	if o.Policy.TimeoutBudget > 0 {
