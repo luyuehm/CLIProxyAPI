@@ -100,8 +100,8 @@ func TestScenario2EmptyChainReturnsRawError(t *testing.T) {
 	if out.Success {
 		t.Fatal("outcome.Success = true, want false")
 	}
-	if !errors.Is(out.Err, raw) && out.Err.Error() == "" {
-		t.Fatalf("final error = %v, want the raw preferred error", out.Err)
+	if !errors.Is(out.Err, raw) {
+		t.Fatalf("final error = %v, want the raw preferred error (pointer identity)", out.Err)
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("attempts = %d, want exactly 1 (no fallback when the chain is empty)", len(exec.calls))
@@ -162,6 +162,53 @@ func TestScenario4RequestLevelDisable(t *testing.T) {
 	}
 	if len(exec.calls) != 1 || exec.calls[0] != "A" {
 		t.Fatalf("attempts = %v, want exactly [A] (fallback must be skipped)", exec.calls)
+	}
+}
+
+// B1 regression: with the fallback switch off, a preferred candidate that is
+// itself excluded by a hard constraint must be the terminal outcome — never a
+// silent promotion to the next candidate.
+func TestDisableDoesNotPromoteOverFilteredPreferred(t *testing.T) {
+	// Quality floor excludes preferred A (quality 1.0 < 2.0). The user opted
+	// out of fallback, so B must not be served.
+	disabled := boolPtr(false)
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A", Quality: 1.0},
+			{Provider: "B", Quality: 3.0},
+		},
+		QualityFloor: 2.0,
+	}
+	executed := 0
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{Fallback: disabled},
+		func(ctx context.Context, provider, model string) error {
+			executed++
+			return nil
+		})
+	if executed != 0 {
+		t.Fatalf("attempts = %d, want 0 (B must not be promoted)", executed)
+	}
+	if !errors.Is(out.Err, fallback.ErrQualityFloorUnsat) {
+		t.Fatalf("final error = %v, want ErrQualityFloorUnsat", out.Err)
+	}
+
+	// Same shape with the cost limit: preferred A is over the limit.
+	policy2 := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A", CostUSD: 0.05},
+			{Provider: "B", CostUSD: 0.001},
+		},
+		CostLimit: 0.01,
+	}
+	o2 := fallback.NewOrchestrator(policy2, nil)
+	out2 := o2.Run(context.Background(), "m", fallback.RequestOptions{Fallback: disabled},
+		func(ctx context.Context, provider, model string) error {
+			t.Fatalf("B must not be executed")
+			return nil
+		})
+	if !errors.Is(out2.Err, fallback.ErrCostLimitExceeded) {
+		t.Fatalf("final error = %v, want ErrCostLimitExceeded", out2.Err)
 	}
 }
 
@@ -445,6 +492,97 @@ func TestConfigToPolicy(t *testing.T) {
 	bad.TimeoutBudget = "ten seconds"
 	if _, _, err := bad.ToPolicy(); err == nil {
 		t.Fatal("a malformed timeout-budget must be an error, not a silent default")
+	}
+}
+
+// Security regression: reason codes must be bounded and built from the
+// provider key only. Raw error text (which net/http strings carry — full
+// URLs with Gemini-style query-string keys, newlines, ...) must never leak
+// into FallbackRecord.Reason or the structured log field.
+func TestReasonCodeNeverCarriesRawErrorText(t *testing.T) {
+	// An untyped error that simulates a net/http failure with a key in the
+	// URL.
+	leaky := errors.New(`Post "https://gen.example/v1beta/models?key=AIzaSECRET123": dial tcp: timeout
+second line`)
+	exec := &fakeExec{errors: map[string]error{"A": leaky}}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{{Provider: "A"}, {Provider: "B"}},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{}, exec.run)
+
+	for _, rec := range out.Fallbacks {
+		if strings.Contains(rec.Reason, "AIzaSECRET123") || strings.Contains(rec.Reason, "gen.example") {
+			t.Fatalf("reason %q leaked raw error text", rec.Reason)
+		}
+		if strings.ContainsAny(rec.Reason, "\n") {
+			t.Fatalf("reason %q contains control characters", rec.Reason)
+		}
+	}
+	// The bounded code for an untyped error on provider A.
+	if out.Err != nil && len(out.Fallbacks) > 0 {
+		if got := out.Fallbacks[len(out.Fallbacks)-1].Reason; got != "provider_B_error" {
+			// B fails only if it has an error; here B succeeds, so the
+			// final record is the A failure:
+			t.Logf("final record reason = %q", got)
+		}
+	}
+}
+
+// Typed provider errors still yield the stable status-carrying code.
+func TestReasonCodeForTypedError(t *testing.T) {
+	exec := &fakeExec{errors: map[string]error{"A": httpErr("A", 429)}}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{{Provider: "A"}, {Provider: "B"}},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{}, exec.run)
+	if !out.Success {
+		t.Fatalf("B must serve: %v", out.Err)
+	}
+	var switchRec *fallback.FallbackRecord
+	for i := range out.Fallbacks {
+		if out.Fallbacks[i].From == "A" && out.Fallbacks[i].To == "B" {
+			switchRec = &out.Fallbacks[i]
+		}
+	}
+	if switchRec == nil {
+		t.Fatalf("no A->B switch record in %+v", out.Fallbacks)
+	}
+	if switchRec.Reason != "provider_A_429" {
+		t.Fatalf("switch reason = %q, want provider_A_429", switchRec.Reason)
+	}
+}
+
+// A zero-value orchestrator must not panic: Run applies its documented
+// clock and logger defaults.
+func TestZeroValueOrchestratorDoesNotPanic(t *testing.T) {
+	var o fallback.Orchestrator
+	o.Policy = fallback.Policy{Candidates: []fallback.Candidate{{Provider: "A"}}}
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{},
+		func(ctx context.Context, provider, model string) error { return nil })
+	if !out.Success {
+		t.Fatalf("zero-value Run must still serve: %+v", out.Err)
+	}
+}
+
+// Dry-run reports a plan, not a served request: Planned must be set so an
+// integrator cannot mistake the plan for an execution.
+func TestDryRunMarksPlanned(t *testing.T) {
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{{Provider: "A"}},
+	}
+	o := fallback.NewOrchestrator(policy, nil).WithDryRun()
+	out := o.Run(context.Background(), "m", fallback.RequestOptions{},
+		func(ctx context.Context, provider, model string) error {
+			t.Fatalf("dry-run must not execute")
+			return nil
+		})
+	if !out.Planned {
+		t.Fatalf("Planned = false, want true")
+	}
+	if out.Provider != "A" {
+		t.Fatalf("planned provider = %q, want A", out.Provider)
 	}
 }
 
