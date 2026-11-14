@@ -1,0 +1,49 @@
+{
+  "data_as_of": "2026-11-14",
+  "source": "https://openrouter.ai/api/v1/models",
+  "verified_by": ".github/scripts/check-openrouter-matrix.sh",
+  "scenarios": {
+    "low-cost": {
+      "title": "Low-cost chat",
+      "primary": "qwen/qwen3.7-flash",
+      "backup": "openai/gpt-5-nano",
+      "fallback": "google/gemini-2.5-flash-lite",
+      "note": "Cheapest full-featured tier in the catalog as of data_as_of: $0.03/$0.13 per 1M tokens with a 1M context window. Backup adds a second vendor; fallback stays cheap ($0.10/$0.40) and long-context."
+    },
+    "code": {
+      "title": "Code generation",
+      "primary": "openai/gpt-5.1-codex",
+      "backup": "qwen/qwen3-coder",
+      "fallback": "deepseek/deepseek-chat",
+      "note": "Primary is a coding-tuned model; backup and fallback are code-capable general models at roughly one-quarter of the primary's output price, so a fallback still ships working code at low cost."
+    },
+    "long-context": {
+      "title": "Long context",
+      "primary": "moonshotai/kimi-k3",
+      "backup": "openai/gpt-5.4",
+      "fallback": "google/gemini-2.5-pro",
+      "note": "All three expose ~1M token windows. Kimi K3 leads on input price ($0.19/1M) for corpus-style work; the fallbacks keep the chain alive when the primary is rate-limited or delisted."
+    },
+    "low-latency": {
+      "title": "Low-latency interaction",
+      "primary": "google/gemini-3.6-flash",
+      "backup": "openai/gpt-5-mini",
+      "fallback": "anthropic/claude-haiku-5.5",
+      "note": "Flash/mini/haiku tiers are the vendors' latency-optimized lines. Keep max_tokens low; all three support 400k+ context so interactive sessions rarely hit a hard ceiling."
+    },
+    "vision": {
+      "title": "Image input (vision)",
+      "primary": "qwen/qwen3-vl-235b-a22b-instruct",
+      "backup": "google/gemini-3.6-flash",
+      "fallback": "openai/gpt-5",
+      "note": "All three declare image input modality in the catalog. Primary is a dedicated VL line at the lowest per-1M price; backup and fallback are general multimodals that also accept files."
+    },
+    "multi-turn": {
+      "title": "Multi-turn conversation",
+      "primary": "qwen/qwen-plus",
+      "backup": "moonshotai/kimi-k2",
+      "fallback": "deepseek/deepseek-chat",
+      "note": "Long, cheap context for conversation history: primary runs 1M tokens at $0.26/$0.78 per 1M. Fallbacks diversify vendors so a single provider outage does not end the session."
+    }
+  }
+}
