@@ -71,11 +71,11 @@ func TestScoreCodeTask(t *testing.T) {
 		t.Fatalf("LengthBucket = %q, want %q", got.LengthBucket, LengthBucketShort)
 	}
 	// Frozen contract values: code/short = 0.45, simple/short = 0.30.
-	if got.Quality != qualityTable[TaskTypeCode][LengthBucketShort] {
-		t.Fatalf("Quality = %v, want frozen contract value %v", got.Quality, qualityTable[TaskTypeCode][LengthBucketShort])
+	if got.Quality != 0.45 {
+		t.Fatalf("Quality = %v, want frozen contract value 0.45", got.Quality)
 	}
-	if got.Quality < qualityTable[TaskTypeSimple][LengthBucketShort] {
-		t.Fatalf("code Quality %v below simple floor %v", got.Quality, qualityTable[TaskTypeSimple][LengthBucketShort])
+	if got.Quality < 0.30 {
+		t.Fatalf("code Quality %v below frozen simple floor 0.30", got.Quality)
 	}
 }
 
@@ -130,7 +130,7 @@ func TestScoreLongDocument(t *testing.T) {
 	if got.TaskType != TaskTypeAnalysis {
 		t.Fatalf("TaskType = %q, want %q (long document)", got.TaskType, TaskTypeAnalysis)
 	}
-	short := QualityScore{TaskType: TaskTypeAnalysis, Quality: qualityTable[TaskTypeAnalysis][LengthBucketShort]}
+	short := QualityScore{TaskType: TaskTypeAnalysis, Quality: 0.50} // frozen analysis/short value
 	if got.RequiredLevel() <= short.RequiredLevel() {
 		t.Fatalf("long required level %v not above short required level %v", got.RequiredLevel(), short.RequiredLevel())
 	}
@@ -191,8 +191,8 @@ func TestScoreBoundaryInputs(t *testing.T) {
 		if got.Quality <= 0 {
 			t.Fatalf("input %d: Quality = %v, want > 0", i, got.Quality)
 		}
-		if got.Quality != qualityTable[TaskTypeDefault][LengthBucketShort] {
-			t.Fatalf("input %d: Quality = %v, want frozen default %v", i, got.Quality, qualityTable[TaskTypeDefault][LengthBucketShort])
+		if got.Quality != 0.30 {
+			t.Fatalf("input %d: Quality = %v, want frozen default 0.30", i, got.Quality)
 		}
 	}
 }
