@@ -47,6 +47,11 @@ type ProviderRef struct {
 	Quality float64 `yaml:"quality,omitempty" json:"quality,omitempty"`
 	// CostUSD is an optional known per-request cost estimate.
 	CostUSD float64 `yaml:"cost-usd,omitempty" json:"cost_usd,omitempty"`
+	// Private marks the provider as a private endpoint (served from the
+	// customer's own cloud account or a dedicated deployment). When a
+	// request sets require_private, only these candidates may be
+	// attempted and no public provider is called.
+	Private bool `yaml:"private,omitempty" json:"private,omitempty"`
 }
 
 // ToPolicy converts the declarative config into the execution policy. It
@@ -62,6 +67,7 @@ func (c Config) ToPolicy() (Policy, *HealthWindow, error) {
 			Model:    ref.Model,
 			Quality:  ref.Quality,
 			CostUSD:  ref.CostUSD,
+			Private:  ref.Private,
 		})
 	}
 	budget, err := c.budget()

@@ -33,6 +33,12 @@ type Candidate struct {
 	// CostUSD is an estimated per-request cost in USD. 0 means "unknown";
 	// an unknown estimate is admitted under a cost limit.
 	CostUSD float64
+	// Private marks the candidate as a private endpoint: the request is
+	// served from the customer's own cloud account or a dedicated
+	// deployment, so no data leaves the customer's controlled network.
+	// When a request sets RequirePrivate, only candidates with this flag
+	// are eligible; see RequestOptions.
+	Private bool
 }
 
 // Policy carries the declarative strategy fields the orchestrator enforces.
@@ -60,6 +66,13 @@ type RequestOptions struct {
 	// chain; false attempts only the preferred candidate and returns its
 	// error as-is, even when the policy configures a full fallback chain.
 	Fallback *bool
+	// RequirePrivate is the hard data-boundary constraint: when true,
+	// only candidates whose Private flag is set may be attempted, and
+	// when the chain holds no eligible private candidate the run fails
+	// with ErrNoPrivateEndpoint without calling any public provider.
+	// It is a filter, not an ordering preference: allow/ignore/order and
+	// the other constraint fields still apply within the remaining set.
+	RequirePrivate bool
 }
 
 // FallbackEnabled reports the effective request-level switch. A nil switch
@@ -82,30 +95,46 @@ var (
 	// ErrAllProvidersCooling: the health backoff has cooled down every
 	// candidate in the chain.
 	ErrAllProvidersCooling = errors.New("fallback: all_providers_cooling")
+	// ErrNoPrivateEndpoint: the request set RequirePrivate but the chain
+	// holds no eligible private candidate; no provider may be called.
+	// Stable code NO_PRIVATE_ENDPOINT for API responses (HTTP 503).
+	ErrNoPrivateEndpoint = errors.New("fallback: no_private_endpoint")
 	// ErrTimeoutBudgetExhausted: the total wall time reached
 	// Policy.TimeoutBudget before the next attempt could start.
 	ErrTimeoutBudgetExhausted = errors.New("fallback: timeout_budget_exhausted")
 )
 
-// eligible filters the chain by the quality floor and the cost limit and
-// reports which constraint (if any) made the whole chain unusable.
+// eligible filters the chain by the data-boundary, quality floor and cost
+// limit and reports which constraint (if any) made the whole chain
+// unusable.
 //
 // Unknown (0) estimates are never excluded: the orchestrator cannot prove
 // them out of bounds, so it lets them through and lets the execution
 // result speak.
-func (p Policy) eligible() ([]Candidate, error) {
+//
+// The requirePrivate filter is the hard data-boundary constraint: when set,
+// only candidates flagged Private are admissible, and an empty result
+// reports ErrNoPrivateEndpoint even if other constraints also failed,
+// because the dominant unmet requirement is the boundary itself.
+func (p Policy) eligible(requirePrivate bool) ([]Candidate, error) {
 	if len(p.Candidates) == 0 {
 		return nil, ErrNoCandidates
 	}
 	out := make([]Candidate, 0, len(p.Candidates))
 	seen := make(map[string]bool, len(p.Candidates))
-	sawCandidate, costExceeded := false, false
+	sawCandidate, sawPrivate, costExceeded := false, false, false
 	for _, c := range p.Candidates {
 		if c.Provider == "" || seen[c.Provider] {
 			continue
 		}
 		seen[c.Provider] = true
 		sawCandidate = true
+		if c.Private {
+			sawPrivate = true
+		}
+		if requirePrivate && !c.Private {
+			continue
+		}
 		if p.QualityFloor > 0 && c.Quality > 0 && c.Quality < p.QualityFloor {
 			continue
 		}
@@ -122,6 +151,12 @@ func (p Policy) eligible() ([]Candidate, error) {
 		return nil, ErrNoCandidates
 	}
 	// The chain is unusable; report the dominant hard constraint.
+	// The data-boundary error wins only when the chain holds no private
+	// candidate at all; a private candidate excluded by cost or quality
+	// reports that constraint instead.
+	if requirePrivate && !sawPrivate {
+		return nil, ErrNoPrivateEndpoint
+	}
 	if costExceeded {
 		return nil, ErrCostLimitExceeded
 	}
