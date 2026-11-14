@@ -112,13 +112,27 @@ func runtimeAuthID(model, provider string) string {
 // it as its Identifier, which is what makes usage_events carry the Provider
 // name KEEPER's health aggregation expects.
 func (r *Reconciler) providerKeyFor(decision Decision) string {
-	if r == nil || r.lookup == nil {
+	if r == nil || r.lookup == nil || r.manager == nil {
 		return ""
 	}
 	if _, ok := r.lookup(decision.AuthRef); !ok {
 		return ""
 	}
-	return providerKeyForDecision(decision)
+	providerKey := providerKeyForDecision(decision)
+	// The pin is gated on a LIVE credential, not on the auth_ref pool alone.
+	// A decision can sit in the pool while the reconciler dropped it (refused
+	// endpoint, empty key) — and KEEPER's upsert does not validate endpoint
+	// shape, so a refused endpoint is reachable in normal operation. Pinning a
+	// provider whose credential was never registered would make
+	// Manager.Execute return auth_not_found on a single-provider shard,
+	// failing the request instead of falling back to default routing. An
+	// operator-configured static credential for the same provider still
+	// counts: falling back to it is exactly the availability-first behaviour
+	// this channel must preserve.
+	if !r.manager.HasProviderAuth(providerKey) {
+		return ""
+	}
+	return providerKey
 }
 
 // providerKeyForDecision is the single spelling of "which provider key does this
