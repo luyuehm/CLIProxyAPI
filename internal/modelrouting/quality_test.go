@@ -232,6 +232,53 @@ func TestQualityTableInvariants(t *testing.T) {
 	}
 }
 
+// TestQualityTableValues pins the twelve frozen (TaskType, LengthBucket) ->
+// Quality literals from the contract table. Without this, a silent table edit
+// would pass every other guard (which compare against the live table) and the
+// documented gate command; pinning the literals makes any value drift a hard
+// test failure.
+func TestQualityTableValues(t *testing.T) {
+	// Frozen contract v1 values (quality_score.md section 4.3).
+	want := map[TaskType]map[LengthBucket]float64{
+		TaskTypeDefault:  {LengthBucketShort: 0.30, LengthBucketMedium: 0.40, LengthBucketLong: 0.55},
+		TaskTypeSimple:   {LengthBucketShort: 0.30, LengthBucketMedium: 0.35, LengthBucketLong: 0.50},
+		TaskTypeCode:     {LengthBucketShort: 0.45, LengthBucketMedium: 0.55, LengthBucketLong: 0.70},
+		TaskTypeAnalysis: {LengthBucketShort: 0.50, LengthBucketMedium: 0.65, LengthBucketLong: 0.80},
+	}
+	if len(qualityTable) != len(want) {
+		t.Fatalf("qualityTable has %d task rows, want %d (frozen set)", len(qualityTable), len(want))
+	}
+	for task, tiers := range want {
+		// A row may not carry an extra or missing bucket key (lengthBucket
+		// returns exactly short/medium/long).
+		if got := qualityTable[task]; len(got) != len(tiers) {
+			t.Fatalf("qualityTable[%q] has %d buckets, want frozen %d", task, len(got), len(tiers))
+		}
+		for bucket, q := range tiers {
+			if got := qualityTable[task][bucket]; got != q {
+				t.Fatalf("qualityTable[%q][%q] = %v, want frozen %v", task, bucket, got, q)
+			}
+		}
+	}
+	// Also pin the capability tier each frozen value implies, so a
+	// threshold-band drift is caught together with a table drift. Tiers are
+	// derived from RequiredLevel()'s bands (<=0.35 Lite, <=0.55 Standard,
+	// <=0.75 Advanced, >0.75 Frontier).
+	wantLevel := map[TaskType]map[LengthBucket]CapabilityLevel{
+		TaskTypeDefault:  {LengthBucketShort: LevelLite, LengthBucketMedium: LevelStandard, LengthBucketLong: LevelStandard},
+		TaskTypeSimple:   {LengthBucketShort: LevelLite, LengthBucketMedium: LevelLite, LengthBucketLong: LevelStandard},
+		TaskTypeCode:     {LengthBucketShort: LevelStandard, LengthBucketMedium: LevelStandard, LengthBucketLong: LevelAdvanced},
+		TaskTypeAnalysis: {LengthBucketShort: LevelStandard, LengthBucketMedium: LevelAdvanced, LengthBucketLong: LevelFrontier},
+	}
+	for task, tiers := range wantLevel {
+		for bucket, lvl := range tiers {
+			if got := (QualityScore{Quality: qualityTable[task][bucket]}).RequiredLevel(); got != lvl {
+				t.Fatalf("qualityTable[%q][%q] = %v -> RequiredLevel %v, want %v", task, bucket, qualityTable[task][bucket], got, lvl)
+			}
+		}
+	}
+}
+
 // TestQualityThresholds pins the Quality -> capability band cuts.
 func TestQualityThresholds(t *testing.T) {
 	cases := []struct {
@@ -302,5 +349,98 @@ func TestModelLevelMapping(t *testing.T) {
 	}
 	if MeetsLevel("claude-haiku-4-5-20251001", LevelStandard) {
 		t.Fatal("lite model must not satisfy standard tier")
+	}
+}
+
+// TestModelLevelRulesFrozen pins the entire model-tier table structurally.
+//
+// TestModelLevelMapping probes a sample of names, but that leaves most
+// modelLevelRules entries (and the substring catch-alls) as the only thing a
+// silent edit could drift against. This test asserts every entry's
+// (kind, match, level) and the rule count, so any tier flip, reordering, or
+// added/removed rule — even for a rule no sample name exercises — hard-fails
+// the documented gate.
+func TestModelLevelRulesFrozen(t *testing.T) {
+	want := []modelLevelRule{
+		{rulePrefix, "claude-fable", LevelFrontier},
+		{rulePrefix, "claude-opus-4-6", LevelFrontier},
+		{rulePrefix, "claude-opus-4-7", LevelFrontier},
+		{rulePrefix, "claude-opus-4-8", LevelFrontier},
+		{rulePrefix, "claude-opus-5", LevelFrontier},
+		{rulePrefix, "gpt-6", LevelFrontier},
+		{rulePrefix, "gemini-3.1-pro-low", LevelAdvanced},
+		{rulePrefix, "gemini-3.1-pro", LevelFrontier},
+		{rulePrefix, "gemini-3-pro", LevelFrontier},
+		{rulePrefix, "kimi-k3", LevelFrontier},
+		{rulePrefix, "claude-opus", LevelAdvanced},
+		{ruleContains, "opus", LevelAdvanced},
+		{rulePrefix, "gemini-2.5-pro", LevelAdvanced},
+		{rulePrefix, "gpt-5.5", LevelAdvanced},
+		{rulePrefix, "gpt-5.6", LevelAdvanced},
+		{rulePrefix, "gpt-oss-120b", LevelAdvanced},
+		{rulePrefix, "kimi-k2", LevelAdvanced},
+		{rulePrefix, "grok-4", LevelAdvanced},
+		{ruleContains, "pro", LevelAdvanced},
+		{ruleContains, "flash-lite", LevelLite},
+		{ruleContains, "haiku", LevelLite},
+		{ruleContains, "-mini", LevelLite},
+		{ruleContains, "-fast", LevelLite},
+		{ruleContains, "lite", LevelLite},
+		{ruleContains, "sonnet", LevelStandard},
+		{ruleContains, "flash", LevelStandard},
+		{ruleContains, "claude", LevelStandard},
+		{ruleContains, "gemini", LevelStandard},
+		{ruleContains, "gpt", LevelStandard},
+		{ruleContains, "kimi", LevelStandard},
+		{ruleContains, "grok", LevelStandard},
+		{ruleContains, "codex", LevelStandard},
+	}
+	if len(modelLevelRules) != len(want) {
+		t.Fatalf("modelLevelRules has %d rules, want frozen %d", len(modelLevelRules), len(want))
+	}
+	for i := range want {
+		if modelLevelRules[i] != want[i] {
+			t.Fatalf("modelLevelRules[%d] = %#v, want frozen %#v", i, modelLevelRules[i], want[i])
+		}
+	}
+	// Pin the rule-kind tag strings so a flip (e.g. rulePrefix "prefix" ->
+	// anything else) cannot silently turn every prefix rule into a substring
+	// rule and re-tier the whole table.
+	if rulePrefix != "prefix" || ruleContains != "contains" {
+		t.Fatalf("rule-kind tags drifted: rulePrefix=%q ruleContains=%q", rulePrefix, ruleContains)
+	}
+}
+
+// TestQualityClassifyThresholds pins the three R3/R4 threshold constants at
+// their exact boundary values. classifyTask reads simpleMaxChars (400),
+// analysisMultiTurnMinUserTurns (3) and analysisLongDocTokens (8000 est.
+// tokens); without edge pinning, a one-off drift (e.g. 400 -> 401) would flip
+// a request's task type and ship green. Inputs avoid R1/R2 (no fence/code
+// markers, "a"*n) so only the length/turn thresholds decide the class.
+func TestQualityClassifyThresholds(t *testing.T) {
+	// simpleMaxChars: 400 chars / 2 user turns -> simple; 401 -> not simple.
+	if got := classifyTask(strings.Repeat("a", 400), 2, 400); got != TaskTypeSimple {
+		t.Fatalf("simpleMaxChars lower edge: %d chars -> %q, want %q", 400, got, TaskTypeSimple)
+	}
+	if got := classifyTask(strings.Repeat("a", 401), 2, 401); got == TaskTypeSimple {
+		t.Fatalf("simpleMaxChars upper edge: 401 chars still classified %q, want not simple", got)
+	}
+
+	// analysisMultiTurnMinUserTurns: 3 user turns -> analysis; 2 -> not analysis.
+	shortText := strings.Repeat("a", 100)
+	if got := classifyTask(shortText, 3, 100); got != TaskTypeAnalysis {
+		t.Fatalf("multi-turn lower edge: 3 user turns -> %q, want %q", got, TaskTypeAnalysis)
+	}
+	if got := classifyTask(shortText, 2, 100); got == TaskTypeAnalysis {
+		t.Fatalf("multi-turn boundary: 2 user turns classified %q, want not analysis", got)
+	}
+
+	// analysisLongDocTokens: 8000 est. tokens (32000 chars) -> analysis;
+	// 7999 (31996 chars) -> not analysis.
+	if got := classifyTask(strings.Repeat("a", 32000), 1, 32000); got != TaskTypeAnalysis {
+		t.Fatalf("long-doc lower edge: 8000 est. tokens -> %q, want %q", got, TaskTypeAnalysis)
+	}
+	if got := classifyTask(strings.Repeat("a", 31996), 1, 31996); got == TaskTypeAnalysis {
+		t.Fatalf("long-doc boundary: 7999 est. tokens classified %q, want not analysis", got)
 	}
 }
