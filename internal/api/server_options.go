@@ -16,7 +16,7 @@ import (
 type serverOptionConfig struct {
 	extraMiddleware       []gin.HandlerFunc
 	engineConfigurator    func(*gin.Engine)
-	routerConfigurator    func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
+	routerConfigurators   []func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)
 	requestLoggerFactory  func(*config.Config, string) logging.RequestLogger
 	localPassword         string
 	keepAliveEnabled      bool
@@ -98,10 +98,13 @@ func WithEngineConfigurator(fn func(*gin.Engine)) ServerOption {
 	}
 }
 
-// WithRouterConfigurator appends a callback after default routes are registered.
+// WithRouterConfigurator appends a callback after default routes are
+// registered. Multiple configurators run in the order they were appended, so
+// independent channels (the arbitrage model router host, the KEEPER route
+// boundary gate) can each install their hooks on the same handler.
 func WithRouterConfigurator(fn func(*gin.Engine, *handlers.BaseAPIHandler, *config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
-		cfg.routerConfigurator = fn
+		cfg.routerConfigurators = append(cfg.routerConfigurators, fn)
 	}
 }
 

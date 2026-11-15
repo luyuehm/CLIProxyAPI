@@ -122,6 +122,35 @@ func nativeInteractionsExecutionError() *interfaces.ErrorMessage {
 	}
 }
 
+// applyRouteBoundary narrows the execution provider pool to the caller's
+// delivered KEEPER route boundary (RIC-2532-A, internal/routeboundary). It
+// runs after entry-protocol adjustment, so the pool the gate sees is the
+// pool the executor would otherwise try, in preference order: automatic
+// fallback can never leave it, and a request the boundary cannot satisfy is
+// rejected before any upstream request is made. A nil gate (default build,
+// channel off, or unverified snapshot) returns the pool untouched.
+func (h *BaseAPIHandler) applyRouteBoundary(ctx context.Context, normalizedModel string, providers []string, routeDecision modelRouteDecision, execOptions modelExecutionOptions) ([]string, *interfaces.ErrorMessage) {
+	if h == nil || h.RouteBoundaryGate == nil {
+		return providers, nil
+	}
+	forced := strings.ToLower(strings.TrimSpace(execOptions.ForcedProvider))
+	routed := strings.ToLower(strings.TrimSpace(routeDecision.Provider))
+	return h.RouteBoundaryGate.ApplyBoundary(ctx, providers, normalizedModel, forced, routed)
+}
+
+// translateRouteBoundaryExecutionError surfaces the contract's 503
+// route_boundary_violation when a boundary-constrained request's pool could
+// not be served after execution was attempted (scenario 2: every allowed
+// provider unavailable, e.g. all cooling down). It returns nil for
+// unconstrained requests or failures that are not credential-availability
+// ones, in which case the caller keeps the original error.
+func (h *BaseAPIHandler) translateRouteBoundaryExecutionError(ctx context.Context, execErr error, normalizedModel string) *interfaces.ErrorMessage {
+	if h == nil || h.RouteBoundaryGate == nil {
+		return nil
+	}
+	return h.RouteBoundaryGate.TranslateExecutionError(ctx, execErr, normalizedModel)
+}
+
 // providersForExecution resolves the providers and normalized model for a request. When a model
 // router selected a built-in provider, it skips model->provider resolution and uses the router's
 // provider (with an optional target model); otherwise it falls back to the registry-based path.

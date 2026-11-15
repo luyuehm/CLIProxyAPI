@@ -277,8 +277,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.setupRoutes()
 
 	// Apply additional router configurators from options
-	if optionState.routerConfigurator != nil {
-		optionState.routerConfigurator(engine, s.handlers, cfg)
+	for _, configurator := range optionState.routerConfigurators {
+		configurator(engine, s.handlers, cfg)
 	}
 
 	// Register management routes when configuration or environment secrets are available,
