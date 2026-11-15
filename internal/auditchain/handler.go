@@ -214,18 +214,18 @@ func (h *Handler) append(c *gin.Context) {
 	row, err := h.store.Append(c.Request.Context(), ev, h.key)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrInvalidOperationID):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid operation id"})
+		case errors.Is(err, ErrInvalidOperationID), errors.Is(err, ErrInvalidEvent):
+			// Input validation: the stable message is safe to echo.
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		case errors.Is(err, ErrBusy):
 			log.WithError(err).Warn("audit chain append busy")
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit chain busy, retry"})
 			return
 		default:
-			// Validation failures are operator input errors; surface the
-			// stable reason without echoing internal detail.
-			log.WithError(err).Debug("audit chain append rejected")
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			// Storage or internal failure: log the detail, echo nothing.
+			log.WithError(err).Warn("audit chain append failed")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "audit chain append failed"})
 			return
 		}
 	}

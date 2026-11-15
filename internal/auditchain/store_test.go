@@ -348,6 +348,22 @@ func TestTimeRangeFilter(t *testing.T) {
 	}
 }
 
+// assertNoPlaintext proves the marker is absent from the database AND its
+// WAL sidecar files. In WAL mode a freshly committed row may live in
+// audit.db-wal, so scanning only the main file proves nothing.
+func assertNoPlaintext(t *testing.T, dbPath, marker string) {
+	t.Helper()
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue // sidecar file may not exist yet
+		}
+		if strings.Contains(string(raw), marker) {
+			t.Fatalf("marker %q found in %s", marker, p)
+		}
+	}
+}
+
 // Snapshot capture is fail-closed: without a key the fields are dropped
 // (never stored in plaintext) and the record reports that.
 func TestSnapshotFailsClosedWithoutKey(t *testing.T) {
@@ -374,28 +390,24 @@ func TestSnapshotFailsClosedWithoutKey(t *testing.T) {
 	if len(chain.Events) != 1 || chain.Events[0].SnapshotRecorded {
 		t.Fatalf("record must report no snapshot without a key: %+v", chain.Events)
 	}
-	// Prove the plaintext was never persisted anywhere in the database
-	// file.
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read db file: %v", err)
-	}
-	if strings.Contains(string(raw), "secret user prompt") {
-		t.Fatalf("model context must not be stored in plaintext without a key")
-	}
+	// Prove the plaintext was never persisted in the database or its WAL.
+	assertNoPlaintext(t, path, "secret user prompt")
 }
 
-// With a key the model context is captured encrypted and the chain stays
-// intact; an attacker changing the encrypted blob must be detected.
-func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
+// With a key the model context is captured encrypted, bound into the chain
+// hash, and — because the GCM nonce is stored in front of the ciphertext —
+// recoverable with the key via OpenSnapshot. An attacker changing the
+// encrypted blob must be detected.
+func TestSnapshotEncryptedTamperEvidentAndDecryptable(t *testing.T) {
 	key, _ := hex.DecodeString(strings.Repeat("ab", 32))
 	now := testClock
 	s, path := testStore(t, func() time.Time { return now })
 	op := "op-snap-006"
+	const marker = "secret user prompt"
 	row, err := s.Append(context.Background(), Event{
 		OperationID: op, Kind: KindModelDecision,
 		Summary:    "model suggestion",
-		ModelInput: "secret user prompt",
+		ModelInput: marker,
 		OccurredAt: now,
 	}, key)
 	if err != nil {
@@ -409,8 +421,26 @@ func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
 	if err := db.QueryRow(`SELECT snapshot FROM audit_chain_events WHERE operation_id = ? AND seq = 1`, op).Scan(&blob); err != nil {
 		t.Fatalf("read snapshot blob: %v", err)
 	}
-	if strings.Contains(string(blob), "secret user prompt") {
+	if strings.Contains(string(blob), marker) {
 		t.Fatalf("snapshot must not store the plaintext model input")
+	}
+
+	// The sealed capture must be decryptable with the key (nonce is
+	// persisted in front of the ciphertext) and decryptable only with
+	// that key.
+	plain, err := OpenSnapshot(key, blob)
+	if err != nil {
+		t.Fatalf("OpenSnapshot with the key: %v", err)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(plain, &decoded); err != nil {
+		t.Fatalf("decrypted snapshot not JSON: %v", err)
+	}
+	if decoded["model_input"] != marker {
+		t.Fatalf("decrypted model_input = %q, want %q", decoded["model_input"], marker)
+	}
+	if _, err := OpenSnapshot([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, blob); err == nil {
+		t.Fatalf("OpenSnapshot must fail with a different key")
 	}
 
 	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
@@ -431,6 +461,57 @@ func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
 	}
 	if !chain.Integrity.Tampered {
 		t.Fatalf("swapping the encrypted snapshot must be detected: %+v", chain.Integrity)
+	}
+}
+
+// Every hash-bound field must be tamper-evident: a raw-SQL rewrite of each
+// one breaks the chain at that record. This pins the digest's field
+// coverage so a future hashInput change cannot silently drop a field.
+func TestEachHashBoundFieldIsTamperEvident(t *testing.T) {
+	now := testClock
+
+	// seq 2 is the record whose fields we rewrite one at a time; after each
+	// rewrite the chain must be tampered at seq 2.
+	cases := []struct {
+		col string
+		val string
+	}{
+		{"kind", "'forged_kind'"},
+		{"actor", "'forged_actor'"},
+		{"summary", "'forged_summary'"},
+		{"payload", "'{}'"},
+		{"auth_method", "'forged_auth'"},
+		{"occurred_at_ns", "123"},
+		{"prev_hash", "x'00'"},
+		{"hash", "x'00'"},
+	}
+	for _, c := range cases {
+		t.Run(c.col, func(t *testing.T) {
+			s2, path2 := testStore(t, func() time.Time { return now })
+			op2 := "op-fields-" + c.col
+			for i := 0; i < 2; i++ {
+				if _, err := s2.Append(context.Background(), Event{
+					OperationID: op2, Kind: KindResult,
+					Summary:    "step",
+					OccurredAt: now.Add(time.Duration(i) * time.Minute),
+				}, nil); err != nil {
+					t.Fatalf("append %d: %v", i, err)
+				}
+			}
+			db := openRaw(t, path2)
+			if _, err := db.Exec(
+				`UPDATE audit_chain_events SET `+c.col+` = `+c.val+
+					` WHERE operation_id = ? AND seq = 2`, op2); err != nil {
+				t.Fatalf("tamper %s: %v", c.col, err)
+			}
+			chain, err := s2.Read(context.Background(), op2, time.Time{}, time.Time{}, 0)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 2 {
+				t.Fatalf("rewriting %s must break the chain at seq 2, got %+v", c.col, chain.Integrity)
+			}
+		})
 	}
 }
 

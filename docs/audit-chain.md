@@ -22,12 +22,15 @@ records the events that matter in one hash-linked timeline:
 ```
 
 - **Query by operation ID.** `GET /v0/management/audit/operations/:id`
-  returns the full event timeline in chain (sequence) order together with
-  the chain-integrity verdict. A `from`/`to` RFC3339 window and an optional
-  `limit` bound the display events; integrity is always verified over the
-  whole sequence, so a tampered middle record cannot be hidden behind a
-  time range. Event times are normally chronological, but the display order
-  is the record `seq` order, not a re-sort by `occurred_at`.
+  returns the event timeline in chain (sequence) order together with the
+  chain-integrity verdict. A `from`/`to` RFC3339 window and an optional
+  `limit` bound the display events; `limit` selects the *first N records
+  in seq order* (head-first, no offset/cursor paging — a very long
+  operation is read from the head), while integrity is always verified
+  over the whole sequence, so a tampered record cannot be hidden behind a
+  time range or a display limit. Event times are normally chronological,
+  but the display order is the record `seq` order, not a re-sort by
+  `occurred_at`.
 - **Append-only, hash-chained.** Each record's digest binds the previous
   digest, the event kind, the actor identity, the summary, the structured
   payload, the event time and the encrypted snapshot. Changing any field —
@@ -38,9 +41,11 @@ records the events that matter in one hash-linked timeline:
   intact prefix (`head_hash`) so the un-tampered portion stays provable.
 - **Encrypted model context.** When a snapshot key is configured, the
   model's input/output captured for the decision is encrypted at rest with
-  AES-GCM and bound into the record hash. Without a key the fields are
-  dropped fail-closed — the chain still records the decision, just without
-  the raw model context. Plaintext model context is never written.
+  AES-GCM (the nonce is stored with the ciphertext, so the capture stays
+  recoverable with the key) and bound into the record hash. Without a key
+  the fields are dropped fail-closed — the chain still records the
+  decision, just without the raw model context. Plaintext model context is
+  never written.
 
 ## Threat model
 
@@ -51,14 +56,21 @@ tampered on the next read. A party that can write the database can
 recompute a re-anchored tail; to make that cost infeasible, anchor the
 `head_hash` of each operation externally (e.g. the KEEPER control plane).
 That anchoring is a follow-up and out of scope here. Tail truncation
-(deleting whole records and re-anchoring) is likewise out of scope.
+(deleting whole records and re-anchoring), and deleting every record of an
+operation, are likewise out of scope — a fully deleted operation reads
+back as `404 operation not found`, indistinguishable from one that was
+never recorded. Appending onto a tampered tail is allowed (the chain
+stays append-only) but logs a loud warning so a compromised timeline is
+not silently extended.
 Client-supplied event times are accepted only within 2000–2200 UTC so the
 stored timestamp can never wrap.
 
 ## Enabling
 
-All switches are environment variables on the gateway process; an
-unconfigured build mounts no routes and opens no database.
+All switches are environment variables on the gateway process. The two
+routes are always mounted inside the authenticated `/v0/management`
+group; when the channel is disabled they answer `404` and open no
+database, so an unconfigured build adds no storage and no goroutines.
 
 | Variable | Meaning |
 | --- | --- |

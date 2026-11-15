@@ -104,6 +104,10 @@ var (
 	// ErrInvalidOperationID is returned for an operation id that fails
 	// validation. Callers in the HTTP layer map this to 400.
 	ErrInvalidOperationID = errors.New("audit chain: invalid operation id")
+	// ErrInvalidEvent is returned when an event fails validation (bad kind,
+	// actor, payload, size or time bounds). The HTTP layer maps it to 400
+	// with a stable message; it never carries internal detail.
+	ErrInvalidEvent = errors.New("audit chain: invalid event")
 	// ErrInvalidKey is returned for a malformed encryption key length.
 	ErrInvalidKey = errors.New("audit chain: invalid encryption key")
 )
@@ -257,11 +261,15 @@ func (s *Store) Close() error {
 // links it to the operation's previous chain hash and writes it
 // atomically. The whole append is one immediate write transaction guarded
 // by a mutex, so seq allocation and row insertion can never diverge and
-// concurrent appends to the same operation cannot collide.
+// concurrent appends to the same operation cannot collide. Identity fields
+// (operation id, kind, actor) are trimmed so a padded value cannot become
+// a different chain element.
 func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, error) {
-	// Normalize the operation id so validation and storage agree on the
-	// identity (a padded id must not become a different operation).
+	// Normalize the identity fields so validation and storage agree on the
+	// element (a padded value must not become a different one).
 	ev.OperationID = strings.TrimSpace(ev.OperationID)
+	ev.Kind = strings.TrimSpace(ev.Kind)
+	ev.Actor = strings.TrimSpace(ev.Actor)
 	now := s.nowFn()
 	if ev.OccurredAt.IsZero() {
 		ev.OccurredAt = now
@@ -284,12 +292,14 @@ func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, 
 		if err != nil {
 			return StoredEvent{}, fmt.Errorf("audit chain: encode snapshot: %w", err)
 		}
-		// GCM requires a fresh nonce per seal under the same key.
+		// GCM requires a fresh nonce per seal under the same key. The
+		// nonce is stored in front of the ciphertext so the capture stays
+		// decryptable with the key (see OpenSnapshot).
 		nonce := make([]byte, aead.NonceSize())
 		if _, err := rand.Read(nonce); err != nil {
 			return StoredEvent{}, fmt.Errorf("audit chain: nonce: %w", err)
 		}
-		snapshot = aead.Seal(nil, nonce, plain, nil)
+		snapshot = append(append([]byte{}, nonce...), aead.Seal(nil, nonce, plain, nil)...)
 		snapshotRecorded = true
 	}
 
@@ -308,7 +318,13 @@ func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, 
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return StoredEvent{}, err
+		// With _txlock=immediate the write lock is taken at BEGIN, which is
+		// where busy contention surfaces; map it to the retryable error
+		// so the HTTP layer can answer 503 instead of 400.
+		if isBusyError(err) {
+			return StoredEvent{}, ErrBusy
+		}
+		return StoredEvent{}, fmt.Errorf("audit chain: begin tx: %w", err)
 	}
 	defer func() {
 		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
@@ -317,6 +333,7 @@ func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, 
 	}()
 
 	var lastHash string
+	var brokenTail bool
 	err = tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) FROM audit_chain_events WHERE operation_id = ?`,
 		ev.OperationID,
@@ -328,19 +345,39 @@ func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, 
 	if row.Seq == 1 {
 		row.PrevHash = genesisHash(ev.OperationID)
 	} else {
+		var prev StoredEvent
+		var prevNS int64
+		var prevSnap []byte
 		err = tx.QueryRowContext(ctx,
-			`SELECT hash FROM audit_chain_events WHERE operation_id = ? AND seq = ?`,
+			`SELECT seq, kind, actor, summary, payload, auth_method,
+			        occurred_at_ns, prev_hash, hash, snapshot
+			 FROM audit_chain_events WHERE operation_id = ? AND seq = ?`,
 			ev.OperationID, row.Seq-1,
-		).Scan(&lastHash)
+		).Scan(&prev.Seq, &prev.Kind, &prev.Actor, &prev.Summary, &prev.PayloadJSON,
+			&prev.AuthMethod, &prevNS, &prev.PrevHash, &lastHash, &prevSnap)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return StoredEvent{}, fmt.Errorf("audit chain: missing seq %d in %s", row.Seq-1, ev.OperationID)
 			}
 			return StoredEvent{}, fmt.Errorf("audit chain: read prev hash: %w", err)
 		}
+		prev.OccurredAt = time.Unix(0, prevNS).UTC()
+		prev.snapshot = prevSnap
+		// Probe the tail: if the previous record's recomputed digest does
+		// not match its stored hash, the chain was broken (a record was
+		// rewritten). The chain stays append-only, but we warn loudly so a
+		// compromised tail is not silently extended.
+		if eventHash(prev, ev.OperationID, prevSnap) != lastHash {
+			brokenTail = true
+		}
 		row.PrevHash = lastHash
 	}
 	row.Hash = eventHash(row, ev.OperationID, snapshot)
+	if brokenTail {
+		logger.WithField("operation", ev.OperationID).
+			Warn("audit chain: extending a tampered tail; record added but the chain is already broken at seq " +
+				strconv.FormatInt(row.Seq-1, 10))
+	}
 
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO audit_chain_events
@@ -365,12 +402,16 @@ func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, 
 	return row, nil
 }
 
-// Read loads one operation's events in seq order, re-verifies the chain
-// over the full sequence and returns the timeline together with the
-// integrity verdict. The optional from/to window and limit bound which
-// events are materialized for display; integrity is always computed over
-// the full sequence, so a tampered middle record is reported even when the
-// display window does not cover it.
+// Read loads one operation's events, re-verifying the chain over the full
+// sequence as it streams, and returns the display timeline together with
+// the integrity verdict. The optional from/to window and limit bound which
+// records are materialized for display; integrity is always computed over
+// the full sequence, so a tampered record is reported even when it falls
+// outside the display window. Memory stays bounded by the display view:
+// records outside it are hashed and discarded, never retained.
+//
+// limit selects the first N events of the display view in seq order; there
+// is no offset/cursor paging, so a very long operation is read head-first.
 func (s *Store) Read(ctx context.Context, operationID string, from, to time.Time, limit int) (OperationChain, error) {
 	operationID = strings.TrimSpace(operationID)
 	if err := validateOperationID(operationID); err != nil {
@@ -395,11 +436,13 @@ func (s *Store) Read(ctx context.Context, operationID string, from, to time.Time
 	defer rows.Close()
 
 	chain := OperationChain{OperationID: operationID}
+	// Integrity state, streamed record by record; only the display view is
+	// retained.
 	seenAny := false
-	// eventsFull holds every record so integrity verifies over the whole
-	// sequence; events is the (windowed) display view returned to the
-	// caller.
-	var eventsFull []StoredEvent
+	verifiedUntil := int64(0) // seq up to which the chain verified so far
+	verifiedHash := genesisHash(operationID)
+	firstBadSeq := int64(0)
+	displayCount := 0
 	for rows.Next() {
 		var ev StoredEvent
 		var ns int64
@@ -411,9 +454,34 @@ func (s *Store) Read(ctx context.Context, operationID string, from, to time.Time
 		}
 		ev.OccurredAt = time.Unix(0, ns).UTC()
 		ev.SnapshotRecorded = hasSnap
-		ev.snapshot = snap
-		eventsFull = append(eventsFull, ev)
 		seenAny = true
+
+		// Verify this record now (binds its snapshot), then discard the
+		// snapshot bytes so memory stays bounded by the display view.
+		if firstBadSeq == 0 {
+			switch {
+			case ev.Seq != verifiedUntil+1:
+				firstBadSeq = ev.Seq
+			case ev.PrevHash != verifiedHash:
+				firstBadSeq = ev.Seq
+			case eventHash(ev, operationID, snap) != ev.Hash:
+				firstBadSeq = ev.Seq
+			default:
+				verifiedUntil = ev.Seq
+				verifiedHash = ev.Hash
+			}
+		}
+
+		// Display view: the from/to window, then the head-first limit.
+		if (!from.IsZero() && ev.OccurredAt.Before(from)) || (!to.IsZero() && ev.OccurredAt.After(to)) {
+			continue
+		}
+		if limit > 0 && displayCount >= limit {
+			continue
+		}
+		ev.snapshot = nil
+		displayCount++
+		chain.Events = append(chain.Events, ev)
 	}
 	if err := rows.Err(); err != nil {
 		return OperationChain{}, fmt.Errorf("audit chain: read: %w", err)
@@ -422,61 +490,14 @@ func (s *Store) Read(ctx context.Context, operationID string, from, to time.Time
 		return OperationChain{}, ErrOperationNotFound
 	}
 
-	chain.Integrity = verifyChain(operationID, eventsFull)
-
-	// Build the display view: the from/to window, then the limit.
-	display := eventsFull
-	if !from.IsZero() || !to.IsZero() {
-		filtered := make([]StoredEvent, 0, len(display))
-		for _, ev := range display {
-			if !from.IsZero() && ev.OccurredAt.Before(from) {
-				continue
-			}
-			if !to.IsZero() && ev.OccurredAt.After(to) {
-				continue
-			}
-			filtered = append(filtered, ev)
-		}
-		display = filtered
-	}
-	if limit > 0 && len(display) > limit {
-		display = display[:limit]
-	}
-	chain.Events = display
-	return chain, nil
-}
-
-// verifyChain recomputes every record hash over the full sequence, checking
-// both the prev_hash link and per-record digest, and that seq is
-// contiguous.
-func verifyChain(operationID string, events []StoredEvent) Integrity {
-	prev := genesisHash(operationID)
-	prevSeq := int64(0)
-	integrity := Integrity{HeadHash: genesisHash(operationID)}
-	for _, ev := range events {
-		if ev.Seq != prevSeq+1 {
-			integrity.FirstBadSeq = ev.Seq
-			break
-		}
-		if ev.PrevHash != prev {
-			integrity.FirstBadSeq = ev.Seq
-			break
-		}
-		want := eventHash(ev, operationID, ev.snapshot)
-		if want != ev.Hash {
-			integrity.FirstBadSeq = ev.Seq
-			break
-		}
-		prevSeq = ev.Seq
-		prev = ev.Hash
-		integrity.HeadHash = ev.Hash
-	}
-	if integrity.FirstBadSeq != 0 {
-		integrity.Tampered = true
+	chain.Integrity = Integrity{HeadHash: verifiedHash}
+	if firstBadSeq != 0 {
+		chain.Integrity.Tampered = true
+		chain.Integrity.FirstBadSeq = firstBadSeq
 	} else {
-		integrity.Intact = true
+		chain.Integrity.Intact = true
 	}
-	return integrity
+	return chain, nil
 }
 
 // genesisHash seeds an operation's chain. It is deterministic per
@@ -583,39 +604,41 @@ func validateEvent(ev *Event) error {
 	if err := validateOperationID(ev.OperationID); err != nil {
 		return err
 	}
+	// Every validation failure wraps ErrInvalidEvent so the HTTP layer can
+	// tell "safe to echo the stable message" input errors apart from
+	// storage errors, which never leak driver detail.
+	invalid := func(msg string) error { return fmt.Errorf("%w: %s", ErrInvalidEvent, msg) }
 	if strings.TrimSpace(ev.Kind) == "" {
-		return errors.New("audit chain: kind is required")
+		return invalid("kind is required")
 	}
 	if len(ev.Kind) > maxKindLen {
-		return fmt.Errorf("audit chain: kind exceeds %d bytes", maxKindLen)
+		return invalid(fmt.Sprintf("kind exceeds %d bytes", maxKindLen))
 	}
 	if ev.Kind == KindApproval && strings.TrimSpace(ev.Actor) == "" {
-		return errors.New("audit chain: approval events require an actor")
+		return invalid("approval events require an actor")
 	}
 	if len(ev.Actor) > maxActorLen {
-		return fmt.Errorf("audit chain: actor exceeds %d bytes", maxActorLen)
+		return invalid(fmt.Sprintf("actor exceeds %d bytes", maxActorLen))
 	}
 	if len(ev.Summary) > maxSummaryLen {
-		return fmt.Errorf("audit chain: summary exceeds %d bytes", maxSummaryLen)
+		return invalid(fmt.Sprintf("summary exceeds %d bytes", maxSummaryLen))
 	}
 	if len(ev.PayloadJSON) > maxPayloadBytes {
-		return fmt.Errorf("audit chain: payload exceeds %d bytes", maxPayloadBytes)
+		return invalid(fmt.Sprintf("payload exceeds %d bytes", maxPayloadBytes))
 	}
-	if ev.PayloadJSON != "" {
-		if !json.Valid([]byte(ev.PayloadJSON)) {
-			return errors.New("audit chain: payload must be valid JSON")
-		}
+	if ev.PayloadJSON != "" && !json.Valid([]byte(ev.PayloadJSON)) {
+		return invalid("payload must be valid JSON")
 	}
 	if len(ev.ModelInput) > maxSnapshotBytes {
-		return fmt.Errorf("audit chain: model_input exceeds %d bytes", maxSnapshotBytes)
+		return invalid(fmt.Sprintf("model_input exceeds %d bytes", maxSnapshotBytes))
 	}
 	if len(ev.ModelOutput) > maxSnapshotBytes {
-		return fmt.Errorf("audit chain: model_output exceeds %d bytes", maxSnapshotBytes)
+		return invalid(fmt.Sprintf("model_output exceeds %d bytes", maxSnapshotBytes))
 	}
 	// Bound the event time so UnixNano stays defined and stored/read agree.
 	if ev.OccurredAt.Before(minEventTime) || ev.OccurredAt.After(maxEventTime) {
-		return fmt.Errorf("audit chain: occurred_at out of range %s..%s",
-			minEventTime.Format("2006"), maxEventTime.Format("2006"))
+		return invalid(fmt.Sprintf("occurred_at out of range %s..%s",
+			minEventTime.Format("2006"), maxEventTime.Format("2006")))
 	}
 	return nil
 }
