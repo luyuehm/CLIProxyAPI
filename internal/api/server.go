@@ -95,6 +95,11 @@ type Server struct {
 	// injected via WithArbitrageStatusHandler. nil when the channel is disabled.
 	arbitrageStatusHandler gin.HandlerFunc
 
+	// auditChainHandler is the RIC-2686 audit chain of responsibility
+	// endpoint, injected via WithAuditChainHandler. nil when the channel is
+	// disabled; the audit routes then report 404.
+	auditChainHandler gin.HandlerFunc
+
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
@@ -199,6 +204,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 		contentFilterExportHandler:   optionState.contentFilterExportHandler,
 		arbitrageStatusHandler:       optionState.arbitrageStatusHandler,
+		auditChainHandler:            optionState.auditChainHandler,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))

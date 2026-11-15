@@ -100,6 +100,13 @@ func (s *Server) registerManagementRoutes() {
 		// decisions and freshness. Registered inside this authenticated group so
 		// routing topology and internal endpoints are never world-readable.
 		mgmt.GET("/arbitrage/status", s.serveArbitrageStatus)
+		// RIC-2686 audit chain of responsibility: tamper-evident timeline
+		// of high-risk actions (model decision, approval, tool call,
+		// result) queryable by business operation ID. Registered inside
+		// this authenticated group so unauthenticated callers are
+		// answered 401/403 before any record content is served.
+		mgmt.GET("/audit/operations/:id", s.serveAuditChain)
+		mgmt.POST("/audit/events", s.serveAuditChain)
 		mgmt.GET("/request-error-logs", s.mgmt.GetRequestErrorLogs)
 		mgmt.GET("/request-error-logs/:name", s.mgmt.DownloadRequestErrorLog)
 		mgmt.GET("/request-log-by-id/:id", s.mgmt.GetRequestLogByID)
@@ -230,6 +237,20 @@ func (s *Server) serveArbitrageStatus(c *gin.Context) {
 		return
 	}
 	s.arbitrageStatusHandler(c)
+}
+
+// serveAuditChain dispatches the RIC-2686 audit chain of responsibility
+// endpoints to the handler injected via WithAuditChainHandler. Both the GET
+// (chain read, path parameter carries the operation id) and the POST
+// (event append, no parameter) are multiplexed onto the same injected
+// handler, which switches on method and parameter. Without an injected
+// handler (channel disabled) the route reports 404.
+func (s *Server) serveAuditChain(c *gin.Context) {
+	if s == nil || s.auditChainHandler == nil {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	s.auditChainHandler(c)
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
