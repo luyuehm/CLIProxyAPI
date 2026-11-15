@@ -22,10 +22,12 @@ records the events that matter in one hash-linked timeline:
 ```
 
 - **Query by operation ID.** `GET /v0/management/audit/operations/:id`
-  returns the full event timeline in chronological order together with the
-  chain-integrity verdict. A `from`/`to` RFC3339 window filters the display
-  events; integrity is always verified over the whole sequence, so a
-  tampered middle record cannot be hidden behind a time range.
+  returns the full event timeline in chain (sequence) order together with
+  the chain-integrity verdict. A `from`/`to` RFC3339 window and an optional
+  `limit` bound the display events; integrity is always verified over the
+  whole sequence, so a tampered middle record cannot be hidden behind a
+  time range. Event times are normally chronological, but the display order
+  is the record `seq` order, not a re-sort by `occurred_at`.
 - **Append-only, hash-chained.** Each record's digest binds the previous
   digest, the event kind, the actor identity, the summary, the structured
   payload, the event time and the encrypted snapshot. Changing any field —
@@ -33,13 +35,25 @@ records the events that matter in one hash-linked timeline:
   chain.
 - **Tamper detection.** A read that finds a broken record reports
   `tampered: true`, the first broken sequence number, and the digest of the
-  intact prefix (`backup_digest`) so the un-tampered portion stays
-  provable.
+  intact prefix (`head_hash`) so the un-tampered portion stays provable.
 - **Encrypted model context.** When a snapshot key is configured, the
   model's input/output captured for the decision is encrypted at rest with
   AES-GCM and bound into the record hash. Without a key the fields are
   dropped fail-closed — the chain still records the decision, just without
   the raw model context. Plaintext model context is never written.
+
+## Threat model
+
+The chain is tamper-*evident* for a reader that cannot write the database:
+an in-place rewrite of any hash-bound record (summary, actor, payload,
+kind, timestamp, snapshot) breaks the record's digest and is reported as
+tampered on the next read. A party that can write the database can
+recompute a re-anchored tail; to make that cost infeasible, anchor the
+`head_hash` of each operation externally (e.g. the KEEPER control plane).
+That anchoring is a follow-up and out of scope here. Tail truncation
+(deleting whole records and re-anchoring) is likewise out of scope.
+Client-supplied event times are accepted only within 2000–2200 UTC so the
+stored timestamp can never wrap.
 
 ## Enabling
 
@@ -60,7 +74,7 @@ management middleware before any record content is served — a denied
 request never learns which records exist.
 
 ```
-GET  /v0/management/audit/operations/:id?from=RFC3339&to=RFC3339
+GET  /v0/management/audit/operations/:id?from=RFC3339&to=RFC3339&limit=N
 POST /v0/management/audit/events
 ```
 

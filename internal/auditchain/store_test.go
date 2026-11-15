@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,17 @@ func testStore(t *testing.T, nowFn func() time.Time) (*Store, string) {
 
 var testClock = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 
+// openRaw re-opens the database for direct row-level tamper in a test.
+func openRaw(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 // Scenario 1: query chain by operation ID returns the full timeline in
 // chronological order with the approver, the model summary, the tool
 // arguments and the execution result.
@@ -38,8 +50,7 @@ func TestQueryChainByOperationID(t *testing.T) {
 	s, _ := testStore(t, func() time.Time { return now.Add(time.Second) })
 
 	op := "op-del-001"
-	payload := map[string]any{"tool": "delete_data", "args": map[string]string{"table": "customers"}}
-	payloadJSON, _ := json.Marshal(payload)
+	payloadJSON, _ := json.Marshal(map[string]any{"tool": "delete_data", "args": map[string]string{"table": "customers"}})
 
 	_, err := s.Append(context.Background(), Event{
 		OperationID: op, Kind: KindModelDecision,
@@ -75,7 +86,7 @@ func TestQueryChainByOperationID(t *testing.T) {
 		t.Fatalf("append result: %v", err)
 	}
 
-	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{})
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -85,20 +96,20 @@ func TestQueryChainByOperationID(t *testing.T) {
 	if !chain.Integrity.Intact || chain.Integrity.Tampered {
 		t.Fatalf("expected intact chain, got %+v", chain.Integrity)
 	}
-	// The timeline must be chronologically ordered.
 	for i := 1; i < len(chain.Events); i++ {
 		if chain.Events[i].OccurredAt.Before(chain.Events[i-1].OccurredAt) {
 			t.Fatalf("events not in chronological order at seq %d", chain.Events[i].Seq)
 		}
 	}
-	// The four fields required by the scenario must be present.
 	var sawApprover, sawModelSummary, sawToolArgs, sawResult bool
+	var approvalTime time.Time
 	for _, ev := range chain.Events {
 		switch ev.Kind {
 		case KindApproval:
 			if ev.Actor != "alice@corp" {
 				t.Fatalf("approver = %q, want alice@corp", ev.Actor)
 			}
+			approvalTime = ev.OccurredAt
 			sawApprover = true
 		case KindModelDecision:
 			if ev.Summary == "" {
@@ -125,9 +136,12 @@ func TestQueryChainByOperationID(t *testing.T) {
 		t.Fatalf("missing required fields: approver=%v model=%v args=%v result=%v",
 			sawApprover, sawModelSummary, sawToolArgs, sawResult)
 	}
+	if approvalTime != now.Add(time.Minute) {
+		t.Fatalf("approval time = %v, want %v", approvalTime, now.Add(time.Minute))
+	}
 }
 
-// Scenario 2 (tamper detection): modify a stored row in place; the next
+// Scenario 3 (tamper detection): modify a stored row in place; the next
 // read must flag the chain as tampered and report the intact prefix
 // digest.
 func TestTamperedChainIsDetected(t *testing.T) {
@@ -144,37 +158,46 @@ func TestTamperedChainIsDetected(t *testing.T) {
 		}
 	}
 
-	// Flip a record in the raw database: the hash of seq 2 must not match
-	// its previous link anymore.
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	// Record the intact prefix digest (seq 1) BEFORE tampering so the
+	// assertion below checks the real value, not a tautology.
+	goodChain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
-		t.Fatalf("re-open db: %v", err)
+		t.Fatalf("read good: %v", err)
 	}
-	defer db.Close()
+	var seq1Hash string
+	for _, ev := range goodChain.Events {
+		if ev.Seq == 1 {
+			seq1Hash = ev.Hash
+		}
+	}
+	if seq1Hash == "" {
+		t.Fatalf("seq 1 hash not found in good chain")
+	}
+
+	// Flip a record in the raw database: its digest must no longer match
+	// the recomputation.
+	db := openRaw(t, path)
 	if _, err := db.Exec(`UPDATE audit_chain_events SET summary = 'forged' WHERE operation_id = ? AND seq = 2`, op); err != nil {
 		t.Fatalf("tamper row: %v", err)
 	}
 
-	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{})
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 2 {
 		t.Fatalf("expected tamper at seq 2, got %+v", chain.Integrity)
 	}
-	if chain.Integrity.BackupDigest == "" {
-		t.Fatalf("expected backup digest of the intact prefix, got empty")
-	}
-	// The intact prefix must hash to exactly the tampered record's prev link,
-	// i.e. the last verified hash equals genesis-hash-of-seq-1.
-	if chain.Integrity.BackupDigest == chain.Integrity.HeadHash && chain.Integrity.FirstBadSeq == 0 {
-		t.Fatalf("backup digest must mark the broken point")
+	// The intact prefix digest must be exactly seq 1's hash, not empty and
+	// not the last record's.
+	if chain.Integrity.HeadHash != seq1Hash {
+		t.Fatalf("intact prefix digest = %s, want the seq-1 hash %s", chain.Integrity.HeadHash, seq1Hash)
 	}
 }
 
-// The approver's identity is bound into the chain hash; rewriting the actor
-// field after the fact must break integrity. This is the "approval identity
-// cannot be forged" guarantee.
+// The approver's identity is bound into the chain hash; rewriting the
+// actor field after the fact must break integrity — the "approval
+// identity cannot be forged" guarantee.
 func TestApproverIdentityIsHashBound(t *testing.T) {
 	now := testClock
 	s, path := testStore(t, func() time.Time { return now })
@@ -186,20 +209,70 @@ func TestApproverIdentityIsHashBound(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
-	if err != nil {
-		t.Fatalf("re-open db: %v", err)
-	}
-	defer db.Close()
+	db := openRaw(t, path)
 	if _, err := db.Exec(`UPDATE audit_chain_events SET actor = 'mallory@evil' WHERE operation_id = ? AND seq = 1`, op); err != nil {
-		t.Fatalf("rewriter actor: %v", err)
+		t.Fatalf("rewrite actor: %v", err)
 	}
-	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{})
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 1 {
 		t.Fatalf("rewriting the approver must break the chain, got %+v", chain.Integrity)
+	}
+}
+
+// Hash-ambiguity regression: moving a '|' between kind and actor must not
+// produce a second valid encoding of the record.
+func TestHashIsUnambiguousAcrossFields(t *testing.T) {
+	h1 := eventHash(StoredEvent{Seq: 1, Kind: "approval", Actor: "alice|ceo", PrevHash: "g"}, "op", nil)
+	h2 := eventHash(StoredEvent{Seq: 1, Kind: "approval|alice", Actor: "ceo", PrevHash: "g"}, "op", nil)
+	if h1 == h2 {
+		t.Fatalf("field-shift collision: kind|actor ambiguous in the record hash")
+	}
+}
+
+// seq is bound into the hash: a single record cannot be relabelled to a
+// higher seq without breaking verification.
+func TestSeqIsHashBound(t *testing.T) {
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-seq-009"
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindResult, Summary: "step", OccurredAt: now,
+	}, nil); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	db := openRaw(t, path)
+	// Relabel the only record to seq 7; the genesis link and seq
+	// contiguity must both fail.
+	if _, err := db.Exec(`UPDATE audit_chain_events SET seq = 7 WHERE operation_id = ? AND seq = 1`, op); err != nil {
+		t.Fatalf("relabel seq: %v", err)
+	}
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 7 {
+		t.Fatalf("relabelled seq must break the chain, got %+v", chain.Integrity)
+	}
+}
+
+// Out-of-range event times are rejected at the append boundary, so the
+// stored (and hash-bound) timestamp can never silently wrap.
+func TestOccurredAtRangeIsValidated(t *testing.T) {
+	s, _ := testStore(t, func() time.Time { return testClock })
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: "op-time-010", Kind: KindResult,
+		OccurredAt: time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, nil); err == nil {
+		t.Fatalf("year-3000 event time must be rejected")
+	}
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: "op-time-010", Kind: KindResult,
+		OccurredAt: time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, nil); err == nil {
+		t.Fatalf("year-1900 event time must be rejected")
 	}
 }
 
@@ -211,7 +284,7 @@ func TestApprovalRequiresActor(t *testing.T) {
 		OperationID: "op-noactor",
 		Kind:        KindApproval,
 		Summary:     "approved",
-		OccurredAt:  time.Time{},
+		OccurredAt:  testClock,
 	}, nil)
 	if err == nil {
 		t.Fatalf("approval without actor must be rejected")
@@ -221,10 +294,11 @@ func TestApprovalRequiresActor(t *testing.T) {
 	}
 }
 
-// An unknown operation read returns ErrOperationNotFound, not an empty chain.
+// An unknown operation read returns ErrOperationNotFound, not an empty
+// chain.
 func TestReadUnknownOperation(t *testing.T) {
 	s, _ := testStore(t, func() time.Time { return testClock })
-	_, err := s.Read(context.Background(), "never-started", time.Time{}, time.Time{})
+	_, err := s.Read(context.Background(), "never-started", time.Time{}, time.Time{}, 0)
 	if !errors.Is(err, ErrOperationNotFound) {
 		t.Fatalf("expected ErrOperationNotFound, got %v", err)
 	}
@@ -234,7 +308,7 @@ func TestReadUnknownOperation(t *testing.T) {
 // while integrity is still verified across the full sequence.
 func TestTimeRangeFilter(t *testing.T) {
 	now := testClock
-	s, _ := testStore(t, func() time.Time { return now })
+	s, path := testStore(t, func() time.Time { return now })
 	op := "op-window-004"
 	for i := 0; i < 5; i++ {
 		if _, err := s.Append(context.Background(), Event{
@@ -247,16 +321,30 @@ func TestTimeRangeFilter(t *testing.T) {
 	}
 	from := now.Add(1 * time.Minute)
 	to := now.Add(3 * time.Minute)
-	chain, err := s.Read(context.Background(), op, from, to)
+	chain, err := s.Read(context.Background(), op, from, to, 0)
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
 	if len(chain.Events) != 3 {
 		t.Fatalf("expected 3 events in [1m,3m], got %d", len(chain.Events))
 	}
-	// Windowing must not mask a later tamper.
 	if !chain.Integrity.Intact {
 		t.Fatalf("intact chain must verify even with a time window: %+v", chain.Integrity)
+	}
+
+	// The window must not mask a tamper in a record outside the window:
+	// tamper seq 1 (the 0m event, outside [1m,3m]) and re-read the
+	// window — the verdict must still report the broken chain.
+	db := openRaw(t, path)
+	if _, err := db.Exec(`UPDATE audit_chain_events SET summary = 'forged' WHERE operation_id = ? AND seq = 1`, op); err != nil {
+		t.Fatalf("tamper outside window: %v", err)
+	}
+	wCh, err := s.Read(context.Background(), op, from, to, 0)
+	if err != nil {
+		t.Fatalf("read window after tamper: %v", err)
+	}
+	if !wCh.Integrity.Tampered || wCh.Integrity.FirstBadSeq != 1 {
+		t.Fatalf("a tamper outside the read window must still be reported: %+v", wCh.Integrity)
 	}
 }
 
@@ -264,7 +352,7 @@ func TestTimeRangeFilter(t *testing.T) {
 // (never stored in plaintext) and the record reports that.
 func TestSnapshotFailsClosedWithoutKey(t *testing.T) {
 	now := testClock
-	s, _ := testStore(t, func() time.Time { return now })
+	s, path := testStore(t, func() time.Time { return now })
 	op := "op-snap-005"
 	row, err := s.Append(context.Background(), Event{
 		OperationID: op,
@@ -279,22 +367,28 @@ func TestSnapshotFailsClosedWithoutKey(t *testing.T) {
 	if row.SnapshotRecorded {
 		t.Fatalf("no key configured: snapshot must not be recorded")
 	}
-	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{})
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if len(chain.Events) != 1 || chain.Events[0].SnapshotRecorded {
 		t.Fatalf("record must report no snapshot without a key: %+v", chain.Events)
 	}
+	// Prove the plaintext was never persisted anywhere in the database
+	// file.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read db file: %v", err)
+	}
+	if strings.Contains(string(raw), "secret user prompt") {
+		t.Fatalf("model context must not be stored in plaintext without a key")
+	}
 }
 
 // With a key the model context is captured encrypted and the chain stays
 // intact; an attacker changing the encrypted blob must be detected.
 func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
-	key, err := hex.DecodeString(strings.Repeat("ab", 32))
-	if err != nil {
-		t.Fatalf("decode key: %v", err)
-	}
+	key, _ := hex.DecodeString(strings.Repeat("ab", 32))
 	now := testClock
 	s, path := testStore(t, func() time.Time { return now })
 	op := "op-snap-006"
@@ -310,12 +404,7 @@ func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
 	if !row.SnapshotRecorded {
 		t.Fatalf("with a key the snapshot must be recorded")
 	}
-	// The raw bytes must not contain the plaintext prompt.
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
-	if err != nil {
-		t.Fatalf("re-open: %v", err)
-	}
-	defer db.Close()
+	db := openRaw(t, path)
 	var blob []byte
 	if err := db.QueryRow(`SELECT snapshot FROM audit_chain_events WHERE operation_id = ? AND seq = 1`, op).Scan(&blob); err != nil {
 		t.Fatalf("read snapshot blob: %v", err)
@@ -324,8 +413,7 @@ func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
 		t.Fatalf("snapshot must not store the plaintext model input")
 	}
 
-	// Read-back of an untouched chain verifies.
-	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{})
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -337,7 +425,7 @@ func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
 	if _, err := db.Exec(`UPDATE audit_chain_events SET snapshot = x'deadbeef' WHERE operation_id = ? AND seq = 1`, op); err != nil {
 		t.Fatalf("tamper blob: %v", err)
 	}
-	chain, err = s.Read(context.Background(), op, time.Time{}, time.Time{})
+	chain, err = s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
 	if err != nil {
 		t.Fatalf("read after tamper: %v", err)
 	}
@@ -346,29 +434,72 @@ func TestSnapshotEncryptedAndTamperEvident(t *testing.T) {
 	}
 }
 
+// Concurrent appends to the same operation must all succeed with unique,
+// contiguous seqs — evidence must not be lost under write contention.
+func TestConcurrentAppendsSerialize(t *testing.T) {
+	now := testClock
+	s, _ := testStore(t, func() time.Time { return now })
+	op := "op-conc-011"
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_, err := s.Append(context.Background(), Event{
+				OperationID: op, Kind: KindResult,
+				Summary:    "concurrent " + string(rune('A'+n)),
+				OccurredAt: now.Add(time.Duration(n) * time.Millisecond),
+			}, nil)
+			errs[n] = err
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent append %d failed: %v", i, err)
+		}
+	}
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(chain.Events) != workers {
+		t.Fatalf("expected %d records, got %d (lost evidence under concurrency)", workers, len(chain.Events))
+	}
+	for i, ev := range chain.Events {
+		if ev.Seq != int64(i+1) {
+			t.Fatalf("seq not contiguous at position %d: got %d", i, ev.Seq)
+		}
+	}
+	if !chain.Integrity.Intact {
+		t.Fatalf("concurrent chain must verify intact: %+v", chain.Integrity)
+	}
+}
+
 // The management-auth boundary: when the channel handler is present, the
 // routes are mounted inside the authenticated group. This test asserts the
-// 404 "channel disabled" path and the handler method dispatch, which is the
-// server-side half of scenario 2 (no permission → no content).
+// 404 "channel disabled" path and the handler method dispatch, the
+// server-side half of scenario 2 (no permission, no content).
 func TestHandlerMethodDispatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s, _ := testStore(t, func() time.Time { return testClock })
 	h := NewHandler(s, nil)
 
-	// POST with a body that references the operation: 201 on create.
 	body := `{"operation_id":"op-http-007","kind":"result","summary":"done"}`
 	req := httptest.NewRequest(http.MethodPost, "/v0/management/audit/events", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	ginCtx, _ := gin.CreateTestContext(rr)
 	ginCtx.Request = req
-	ginCtx.Params = gin.Params{} // no :id param on POST
+	ginCtx.Params = gin.Params{}
 	h.Handle(ginCtx)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("POST /audit/events = %d, want 201 (body: %s)", rr.Code, rr.Body.String())
 	}
 
-	// GET the same operation back: 200 with the recorded event.
 	reqGet := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/op-http-007", nil)
 	rrGet := httptest.NewRecorder()
 	ginCtxGet, _ := gin.CreateTestContext(rrGet)
@@ -378,8 +509,14 @@ func TestHandlerMethodDispatch(t *testing.T) {
 	if rrGet.Code != http.StatusOK {
 		t.Fatalf("GET /audit/operations/op-http-007 = %d, want 200 (body: %s)", rrGet.Code, rrGet.Body.String())
 	}
+	var resp map[string]any
+	if err := json.Unmarshal(rrGet.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+	if resp["operation_id"] != "op-http-007" {
+		t.Fatalf("operation_id = %v, want op-http-007", resp["operation_id"])
+	}
 
-	// A GET for an operation that was never started: 404, no content.
 	reqMiss := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/none", nil)
 	rrMiss := httptest.NewRecorder()
 	ginCtxMiss, _ := gin.CreateTestContext(rrMiss)
@@ -388,6 +525,29 @@ func TestHandlerMethodDispatch(t *testing.T) {
 	h.Handle(ginCtxMiss)
 	if rrMiss.Code != http.StatusNotFound {
 		t.Fatalf("GET unknown operation = %d, want 404", rrMiss.Code)
+	}
+
+	// An oversized body is rejected before the field caps would matter.
+	big := strings.Repeat("a", maxBodyBytes+1)
+	reqBig := httptest.NewRequest(http.MethodPost, "/v0/management/audit/events", strings.NewReader(big))
+	rrBig := httptest.NewRecorder()
+	ginCtxBig, _ := gin.CreateTestContext(rrBig)
+	ginCtxBig.Request = reqBig
+	ginCtxBig.Params = gin.Params{}
+	h.Handle(ginCtxBig)
+	if rrBig.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body = %d, want 413", rrBig.Code)
+	}
+
+	// An invalid operation id is a 400, not a 500.
+	reqBad := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/bad%20id!", nil)
+	rrBad := httptest.NewRecorder()
+	ginCtxBad, _ := gin.CreateTestContext(rrBad)
+	ginCtxBad.Request = reqBad
+	ginCtxBad.Params = gin.Params{{Key: "id", Value: "bad id!"}}
+	h.Handle(ginCtxBad)
+	if rrBad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid operation id = %d, want 400", rrBad.Code)
 	}
 }
 
@@ -408,7 +568,7 @@ func TestHandlerNilStoreReportsUnavailable(t *testing.T) {
 
 // Invalid hex key config is fail-closed: capture disabled, not plaintext.
 func TestMalformedKeyIsFailClosed(t *testing.T) {
-	t.Setenv(EnvKeyHex, "zz") // not hex
+	t.Setenv(EnvKeyHex, "zz")
 	if keyFromEnv() != nil {
 		t.Fatalf("malformed hex key must return nil (capture disabled)")
 	}
@@ -430,8 +590,6 @@ func TestServerOptionEnabled(t *testing.T) {
 	if opt := ServerOption(); opt == nil {
 		t.Fatalf("ServerOption must be non-nil when enabled and the db is openable")
 	}
-	// The database file must exist and be 0600 (owner-only) so the audit
-	// trail is not world-readable.
 	info, err := os.Stat(filepath.Join(tmp, "audit.db"))
 	if err != nil {
 		t.Fatalf("audit db should exist: %v", err)

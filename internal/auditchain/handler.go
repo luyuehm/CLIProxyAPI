@@ -8,7 +8,7 @@
 //
 // Routes:
 //
-//	GET  /v0/management/audit/operations/:id?from=RFC3339&to=RFC3339
+//	GET  /v0/management/audit/operations/:id?from=RFC3339&to=RFC3339&limit=N
 //	    reads one operation's event timeline plus the chain-integrity verdict.
 //	POST /v0/management/audit/events
 //	    appends one event to an operation's chain.
@@ -17,13 +17,20 @@ package auditchain
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
 )
+
+// maxBodyBytes bounds an append request; the field caps in validateEvent
+// apply to the decoded structure, and this bound stops a hostile body from
+// pinning memory before decoding.
+const maxBodyBytes = 512 << 10
 
 // Handler serves the audit-chain endpoints.
 type Handler struct {
@@ -72,11 +79,10 @@ type storedEventResponse struct {
 }
 
 type integrityResponse struct {
-	Intact       bool   `json:"intact"`
-	Tampered     bool   `json:"tampered"`
-	FirstBadSeq  int64  `json:"first_bad_seq"`
-	HeadHash     string `json:"head_hash"`
-	BackupDigest string `json:"backup_digest,omitempty"`
+	Intact      bool   `json:"intact"`
+	Tampered    bool   `json:"tampered"`
+	FirstBadSeq int64  `json:"first_bad_seq"`
+	HeadHash    string `json:"head_hash"`
 }
 
 type operationResponse struct {
@@ -86,7 +92,8 @@ type operationResponse struct {
 }
 
 func (h *Handler) operation(c *gin.Context) {
-	operationID := c.Param("id")
+	// Trim the operation id so validation and storage agree on identity.
+	operationID := strings.TrimSpace(c.Param("id"))
 	var from, to time.Time
 	if v := strings.TrimSpace(c.Query("from")); v != "" {
 		t, err := time.Parse(time.RFC3339, v)
@@ -104,9 +111,22 @@ func (h *Handler) operation(c *gin.Context) {
 		}
 		to = t
 	}
-	chain, err := h.store.Read(c.Request.Context(), operationID, from, to)
-	if errors.Is(err, ErrOperationNotFound) {
+	limit := 0
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a non-negative integer"})
+			return
+		}
+		limit = n
+	}
+	chain, err := h.store.Read(c.Request.Context(), operationID, from, to, limit)
+	switch {
+	case errors.Is(err, ErrOperationNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "operation not found"})
+		return
+	case errors.Is(err, ErrInvalidOperationID):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid operation id"})
 		return
 	}
 	if err != nil {
@@ -138,11 +158,10 @@ func (h *Handler) operation(c *gin.Context) {
 		resp.Events = append(resp.Events, er)
 	}
 	resp.Integrity = integrityResponse{
-		Intact:       chain.Integrity.Intact,
-		Tampered:     chain.Integrity.Tampered,
-		FirstBadSeq:  chain.Integrity.FirstBadSeq,
-		HeadHash:     chain.Integrity.HeadHash,
-		BackupDigest: chain.Integrity.BackupDigest,
+		Intact:      chain.Integrity.Intact,
+		Tampered:    chain.Integrity.Tampered,
+		FirstBadSeq: chain.Integrity.FirstBadSeq,
+		HeadHash:    chain.Integrity.HeadHash,
 	}
 	c.JSON(http.StatusOK, resp)
 }
@@ -159,14 +178,25 @@ type appendRequest struct {
 }
 
 func (h *Handler) append(c *gin.Context) {
-	var req appendRequest
-	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+	// Bound the body before decoding: MaxBytesReader's error is not
+	// reliably detectable after json.Decode, so read a bounded slice and
+	// check the length explicitly.
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBodyBytes+1))
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return
 	}
-	// Only forward snapshots when the channel is configured to capture them:
-	// without a key the store drops them anyway, and echoing them back would
-	// be a pointless copy.
+	if len(body) > maxBodyBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+		return
+	}
+	var req appendRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+		return
+	}
+	// Normalize the operation id so storage and later reads agree.
+	req.OperationID = strings.TrimSpace(req.OperationID)
 	payload := ""
 	if len(req.Payload) > 0 {
 		payload = string(req.Payload)
@@ -183,15 +213,21 @@ func (h *Handler) append(c *gin.Context) {
 	}
 	row, err := h.store.Append(c.Request.Context(), ev, h.key)
 	if err != nil {
-		// Validation failures are operator input errors; surface as 400
-		// without echoing internal detail.
-		if errors.Is(err, ErrInvalidKey) {
-			log.WithError(err).Warn("audit chain append rejected")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "audit chain unavailable"})
+		switch {
+		case errors.Is(err, ErrInvalidOperationID):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid operation id"})
+			return
+		case errors.Is(err, ErrBusy):
+			log.WithError(err).Warn("audit chain append busy")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit chain busy, retry"})
+			return
+		default:
+			// Validation failures are operator input errors; surface the
+			// stable reason without echoing internal detail.
+			log.WithError(err).Debug("audit chain append rejected")
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
 	}
 	c.JSON(http.StatusCreated, gin.H{
 		"operation_id":      ev.OperationID,
