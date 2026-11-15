@@ -93,6 +93,11 @@ var (
 	maxEventTime = time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
+// busyTimeoutMS is the SQLite busy_timeout used when opening a store. It is
+// a package var so a test can shrink it to trigger a real SQLITE_BUSY in
+// milliseconds instead of waiting out the 5 s production default.
+var busyTimeoutMS = 5000
+
 var (
 	// ErrOperationNotFound is returned by Read when no event has been
 	// recorded for the operation; callers create it implicitly by
@@ -210,10 +215,13 @@ func NewStore(path string, nowFn func() time.Time) (*Store, error) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return nil, fmt.Errorf("audit chain: chmod database: %w", err)
 	}
-	// An immediate write lock is taken at BEGIN so the read MAX(seq) and
-	// the INSERT share one lock and the deferred read->write upgrade
-	// (which SQLite cannot retry under busy_timeout) never happens.
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
+	// _txlock=immediate makes SQLite take the write lock at BEGIN, so the
+	// read MAX(seq) and the INSERT share one lock and the deferred
+	// read->write upgrade (which SQLite cannot retry under busy_timeout)
+	// never happens. The busy timeout is a tunable package var so tests
+	// can shrink it to trigger a real SQLITE_BUSY quickly.
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(%d)&_txlock=immediate",
+		path, busyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("audit chain: open database: %w", err)
@@ -410,14 +418,21 @@ func (s *Store) Append(ctx context.Context, ev Event, key []byte) (StoredEvent, 
 // outside the display window. Memory stays bounded by the display view:
 // records outside it are hashed and discarded, never retained.
 //
-// limit selects the first N events of the display view in seq order; there
-// is no offset/cursor paging, so a very long operation is read head-first.
+// limit selects the first N events of the display view in seq order; a
+// non-positive limit (omitted) is capped at maxReadLimit, so an operation
+// can never be read back without a memory bound. There is no
+// offset/cursor paging, so a very long operation is read head-first.
 func (s *Store) Read(ctx context.Context, operationID string, from, to time.Time, limit int) (OperationChain, error) {
 	operationID = strings.TrimSpace(operationID)
 	if err := validateOperationID(operationID); err != nil {
 		return OperationChain{}, err
 	}
-	if limit > maxReadLimit {
+	// limit=0 (unspecified) still caps the display view: an operation may
+	// be grown by an authenticated writer, and an unbounded read must not
+	// be an OOM amplifier.
+	if limit <= 0 {
+		limit = maxReadLimit
+	} else if limit > maxReadLimit {
 		limit = maxReadLimit
 	}
 	rows, err := s.db.QueryContext(ctx,
@@ -588,10 +603,22 @@ func sha256Hex(s string) string {
 
 // isBusyError reports whether a driver error is SQLite busy/locked, i.e.
 // the write could not acquire the lock within the busy timeout and is safe
-// to retry.
+// to retry. The modernc.org/sqlite driver exposes a typed result code, so
+// that is checked first; the message-text fallback covers wrapped or
+// foreign driver errors.
 func isBusyError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		const (
+			sqliteBusy   = 5
+			sqliteLocked = 6
+		)
+		if c := coded.Code(); c == sqliteBusy || c == sqliteLocked {
+			return true
+		}
 	}
 	msg := strings.ToUpper(err.Error())
 	return strings.Contains(msg, "SQLITE_BUSY") ||

@@ -560,6 +560,77 @@ func TestConcurrentAppendsSerialize(t *testing.T) {
 	}
 }
 
+// A busy database must surface as ErrBusy (retryable) and the handler must
+// answer 503 with a static message — no raw driver text leaks to the
+// client. This exact mapping has failed review twice, so it is pinned
+// here.
+func TestBusyAppendMapsToErrBusyAnd503(t *testing.T) {
+	// Shrink the busy timeout so the real SQLITE_BUSY fires in ~50ms
+	// instead of waiting out the 5s production default.
+	prevBusy := busyTimeoutMS
+	busyTimeoutMS = 50
+	t.Cleanup(func() { busyTimeoutMS = prevBusy })
+
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	// Seed one record so the table and WAL exist.
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: "op-busy", Kind: KindResult,
+		Summary:    "seed",
+		OccurredAt: now,
+	}, nil); err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+
+	// Hold the write lock from a second connection for longer than the
+	// busy timeout, so an immediate-lock BEGIN in Append times out.
+	hold, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer hold.Close()
+	if _, err := hold.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("acquire write lock: %v", err)
+	}
+
+	_, err = s.Append(context.Background(), Event{
+		OperationID: "op-busy", Kind: KindResult,
+		Summary:    "contended",
+		OccurredAt: now.Add(time.Second),
+	}, nil)
+	// Release the lock before asserting so the cleanup path is clean;
+	// the append has already failed by the time this runs.
+	hold.Exec(`ROLLBACK`)
+
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("Append under contention must return ErrBusy, got %v", err)
+	}
+
+	// The handler maps ErrBusy to 503 with a static, driver-free body.
+	gin.SetMode(gin.TestMode)
+	h := NewHandler(s, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/audit/events",
+		strings.NewReader(`{"operation_id":"op-busy","kind":"result","summary":"contended"}`))
+	rr := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rr)
+	ginCtx.Request = req
+	ginCtx.Params = gin.Params{}
+	// Re-hold the lock so the handler's append also hits ErrBusy.
+	if _, err := hold.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("re-acquire write lock: %v", err)
+	}
+	defer hold.Exec(`ROLLBACK`)
+	h.Handle(ginCtx)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ErrBusy must map to 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	for _, leak := range []string{"SQLITE", "database is", "locked", "busy_timeout"} {
+		if strings.Contains(strings.ToLower(rr.Body.String()), leak) {
+			t.Fatalf("503 body leaked driver text %q: %s", leak, rr.Body.String())
+		}
+	}
+}
+
 // The management-auth boundary: when the channel handler is present, the
 // routes are mounted inside the authenticated group. This test asserts the
 // 404 "channel disabled" path and the handler method dispatch, the

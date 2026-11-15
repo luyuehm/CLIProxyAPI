@@ -28,8 +28,11 @@ records the events that matter in one hash-linked timeline:
   in seq order* (head-first, no offset/cursor paging — a very long
   operation is read from the head), while integrity is always verified
   over the whole sequence, so a tampered record cannot be hidden behind a
-  time range or a display limit. Event times are normally chronological,
-  but the display order is the record `seq` order, not a re-sort by
+  time range or a display limit. Omitting `limit` (or `limit=0`) returns
+  at most the default cap of 100,000 events — reads are memory-bounded so
+  a single operation cannot OOM the gateway. `from`/`to` are inclusive
+  bounds on `occurred_at`. Event times are normally chronological, but the
+  display order is the record `seq` order, not a re-sort by
   `occurred_at`.
 - **Append-only, hash-chained.** Each record's digest binds the previous
   digest, the event kind, the actor identity, the summary, the structured

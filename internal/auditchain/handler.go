@@ -27,10 +27,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// maxBodyBytes bounds an append request; the field caps in validateEvent
-// apply to the decoded structure, and this bound stops a hostile body from
-// pinning memory before decoding.
-const maxBodyBytes = 512 << 10
+// maxBodyBytes bounds an append request. It must stay above the sum of the
+// per-field caps in validateEvent (model_input 256KiB + model_output 256KiB +
+// payload 64KiB, plus JSON escaping) so a field-legal body is never rejected
+// with 413. It still stops a hostile body from pinning memory before
+// decoding.
+const maxBodyBytes = 1 << 20 // 1 MiB
 
 // Handler serves the audit-chain endpoints.
 type Handler struct {
