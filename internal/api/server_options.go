@@ -37,6 +37,11 @@ type serverOptionConfig struct {
 	// inside the authenticated /v0/management group so it inherits the same
 	// management-key auth as every other management route.
 	arbitrageStatusHandler gin.HandlerFunc
+	// auditChainHandler is the RIC-2686 audit chain of responsibility endpoint.
+	// It is injected by internal/auditchain (which imports this package) and
+	// registered inside the authenticated /v0/management group so unauthenticated
+	// callers are answered 401/403 before any record content can leak.
+	auditChainHandler gin.HandlerFunc
 }
 
 // ServerOption customises HTTP server construction.
@@ -88,6 +93,17 @@ func WithContentFilterExportHandler(h gin.HandlerFunc) ServerOption {
 func WithArbitrageStatusHandler(h gin.HandlerFunc) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.arbitrageStatusHandler = h
+	}
+}
+
+// WithAuditChainHandler injects the RIC-2686 audit chain of responsibility
+// endpoints (GET /v0/management/audit/operations/:id and POST
+// /v0/management/audit/events). They are registered inside the authenticated
+// /v0/management group; without a handler (channel disabled) the routes
+// report 404 so callers can tell the feature is off.
+func WithAuditChainHandler(h gin.HandlerFunc) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.auditChainHandler = h
 	}
 }
 

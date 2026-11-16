@@ -1,0 +1,752 @@
+package auditchain
+
+import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+func testStore(t *testing.T, nowFn func() time.Time) (*Store, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "audit.db")
+	s, err := NewStore(path, nowFn)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s, path
+}
+
+var testClock = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+
+// openRaw re-opens the database for direct row-level tamper in a test.
+func openRaw(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// Scenario 1: query chain by operation ID returns the full timeline in
+// chronological order with the approver, the model summary, the tool
+// arguments and the execution result.
+func TestQueryChainByOperationID(t *testing.T) {
+	now := testClock
+	s, _ := testStore(t, func() time.Time { return now.Add(time.Second) })
+
+	op := "op-del-001"
+	payloadJSON, _ := json.Marshal(map[string]any{"tool": "delete_data", "args": map[string]string{"table": "customers"}})
+
+	_, err := s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindModelDecision,
+		Summary:    "model suggests deleting the customers table (95% confidence)",
+		OccurredAt: now,
+	}, nil)
+	if err != nil {
+		t.Fatalf("append decision: %v", err)
+	}
+	_, err = s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindApproval, Actor: "alice@corp",
+		Summary:    "approved after risk review",
+		OccurredAt: now.Add(time.Minute),
+	}, nil)
+	if err != nil {
+		t.Fatalf("append approval: %v", err)
+	}
+	_, err = s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindToolCall,
+		Summary:     "delete_data invoked",
+		PayloadJSON: string(payloadJSON),
+		OccurredAt:  now.Add(2 * time.Minute),
+	}, nil)
+	if err != nil {
+		t.Fatalf("append tool_call: %v", err)
+	}
+	_, err = s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindResult,
+		Summary:    "312 rows deleted",
+		OccurredAt: now.Add(3 * time.Minute),
+	}, nil)
+	if err != nil {
+		t.Fatalf("append result: %v", err)
+	}
+
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(chain.Events) != 4 {
+		t.Fatalf("expected 4 events, got %d", len(chain.Events))
+	}
+	if !chain.Integrity.Intact || chain.Integrity.Tampered {
+		t.Fatalf("expected intact chain, got %+v", chain.Integrity)
+	}
+	for i := 1; i < len(chain.Events); i++ {
+		if chain.Events[i].OccurredAt.Before(chain.Events[i-1].OccurredAt) {
+			t.Fatalf("events not in chronological order at seq %d", chain.Events[i].Seq)
+		}
+	}
+	var sawApprover, sawModelSummary, sawToolArgs, sawResult bool
+	var approvalTime time.Time
+	for _, ev := range chain.Events {
+		switch ev.Kind {
+		case KindApproval:
+			if ev.Actor != "alice@corp" {
+				t.Fatalf("approver = %q, want alice@corp", ev.Actor)
+			}
+			approvalTime = ev.OccurredAt
+			sawApprover = true
+		case KindModelDecision:
+			if ev.Summary == "" {
+				t.Fatalf("model decision summary empty")
+			}
+			sawModelSummary = true
+		case KindToolCall:
+			var p map[string]any
+			if err := json.Unmarshal([]byte(ev.PayloadJSON), &p); err != nil {
+				t.Fatalf("tool call args: %v", err)
+			}
+			if p["tool"] != "delete_data" {
+				t.Fatalf("tool = %v, want delete_data", p["tool"])
+			}
+			sawToolArgs = true
+		case KindResult:
+			if ev.Summary == "" {
+				t.Fatalf("result summary empty")
+			}
+			sawResult = true
+		}
+	}
+	if !sawApprover || !sawModelSummary || !sawToolArgs || !sawResult {
+		t.Fatalf("missing required fields: approver=%v model=%v args=%v result=%v",
+			sawApprover, sawModelSummary, sawToolArgs, sawResult)
+	}
+	if approvalTime != now.Add(time.Minute) {
+		t.Fatalf("approval time = %v, want %v", approvalTime, now.Add(time.Minute))
+	}
+}
+
+// Scenario 3 (tamper detection): modify a stored row in place; the next
+// read must flag the chain as tampered and report the intact prefix
+// digest.
+func TestTamperedChainIsDetected(t *testing.T) {
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-tamper-002"
+	for i := 0; i < 3; i++ {
+		if _, err := s.Append(context.Background(), Event{
+			OperationID: op, Kind: KindModelDecision,
+			Summary:    "decision " + string(rune('a'+i)),
+			OccurredAt: now.Add(time.Duration(i) * time.Minute),
+		}, nil); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	// Record the intact prefix digest (seq 1) BEFORE tampering so the
+	// assertion below checks the real value, not a tautology.
+	goodChain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read good: %v", err)
+	}
+	var seq1Hash string
+	for _, ev := range goodChain.Events {
+		if ev.Seq == 1 {
+			seq1Hash = ev.Hash
+		}
+	}
+	if seq1Hash == "" {
+		t.Fatalf("seq 1 hash not found in good chain")
+	}
+
+	// Flip a record in the raw database: its digest must no longer match
+	// the recomputation.
+	db := openRaw(t, path)
+	if _, err := db.Exec(`UPDATE audit_chain_events SET summary = 'forged' WHERE operation_id = ? AND seq = 2`, op); err != nil {
+		t.Fatalf("tamper row: %v", err)
+	}
+
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 2 {
+		t.Fatalf("expected tamper at seq 2, got %+v", chain.Integrity)
+	}
+	// The intact prefix digest must be exactly seq 1's hash, not empty and
+	// not the last record's.
+	if chain.Integrity.HeadHash != seq1Hash {
+		t.Fatalf("intact prefix digest = %s, want the seq-1 hash %s", chain.Integrity.HeadHash, seq1Hash)
+	}
+}
+
+// The approver's identity is bound into the chain hash; rewriting the
+// actor field after the fact must break integrity — the "approval
+// identity cannot be forged" guarantee.
+func TestApproverIdentityIsHashBound(t *testing.T) {
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-actor-003"
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindApproval, Actor: "bob@corp",
+		Summary:    "approved",
+		OccurredAt: now,
+	}, nil); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	db := openRaw(t, path)
+	if _, err := db.Exec(`UPDATE audit_chain_events SET actor = 'mallory@evil' WHERE operation_id = ? AND seq = 1`, op); err != nil {
+		t.Fatalf("rewrite actor: %v", err)
+	}
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 1 {
+		t.Fatalf("rewriting the approver must break the chain, got %+v", chain.Integrity)
+	}
+}
+
+// Hash-ambiguity regression: moving a '|' between kind and actor must not
+// produce a second valid encoding of the record.
+func TestHashIsUnambiguousAcrossFields(t *testing.T) {
+	h1 := eventHash(StoredEvent{Seq: 1, Kind: "approval", Actor: "alice|ceo", PrevHash: "g"}, "op", nil)
+	h2 := eventHash(StoredEvent{Seq: 1, Kind: "approval|alice", Actor: "ceo", PrevHash: "g"}, "op", nil)
+	if h1 == h2 {
+		t.Fatalf("field-shift collision: kind|actor ambiguous in the record hash")
+	}
+}
+
+// seq is bound into the hash: a single record cannot be relabelled to a
+// higher seq without breaking verification.
+func TestSeqIsHashBound(t *testing.T) {
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-seq-009"
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindResult, Summary: "step", OccurredAt: now,
+	}, nil); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	db := openRaw(t, path)
+	// Relabel the only record to seq 7; the genesis link and seq
+	// contiguity must both fail.
+	if _, err := db.Exec(`UPDATE audit_chain_events SET seq = 7 WHERE operation_id = ? AND seq = 1`, op); err != nil {
+		t.Fatalf("relabel seq: %v", err)
+	}
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 7 {
+		t.Fatalf("relabelled seq must break the chain, got %+v", chain.Integrity)
+	}
+}
+
+// Out-of-range event times are rejected at the append boundary, so the
+// stored (and hash-bound) timestamp can never silently wrap.
+func TestOccurredAtRangeIsValidated(t *testing.T) {
+	s, _ := testStore(t, func() time.Time { return testClock })
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: "op-time-010", Kind: KindResult,
+		OccurredAt: time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, nil); err == nil {
+		t.Fatalf("year-3000 event time must be rejected")
+	}
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: "op-time-010", Kind: KindResult,
+		OccurredAt: time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, nil); err == nil {
+		t.Fatalf("year-1900 event time must be rejected")
+	}
+}
+
+// An approval event without an actor is rejected: the approver identity is
+// a non-reducible contract field.
+func TestApprovalRequiresActor(t *testing.T) {
+	s, _ := testStore(t, func() time.Time { return testClock })
+	_, err := s.Append(context.Background(), Event{
+		OperationID: "op-noactor",
+		Kind:        KindApproval,
+		Summary:     "approved",
+		OccurredAt:  testClock,
+	}, nil)
+	if err == nil {
+		t.Fatalf("approval without actor must be rejected")
+	}
+	if !strings.Contains(err.Error(), "actor") {
+		t.Fatalf("error should mention the actor requirement, got %v", err)
+	}
+}
+
+// An unknown operation read returns ErrOperationNotFound, not an empty
+// chain.
+func TestReadUnknownOperation(t *testing.T) {
+	s, _ := testStore(t, func() time.Time { return testClock })
+	_, err := s.Read(context.Background(), "never-started", time.Time{}, time.Time{}, 0)
+	if !errors.Is(err, ErrOperationNotFound) {
+		t.Fatalf("expected ErrOperationNotFound, got %v", err)
+	}
+}
+
+// The required time-range filter returns only the events inside the window
+// while integrity is still verified across the full sequence.
+func TestTimeRangeFilter(t *testing.T) {
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-window-004"
+	for i := 0; i < 5; i++ {
+		if _, err := s.Append(context.Background(), Event{
+			OperationID: op, Kind: KindResult,
+			Summary:    "step",
+			OccurredAt: now.Add(time.Duration(i) * time.Minute),
+		}, nil); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	from := now.Add(1 * time.Minute)
+	to := now.Add(3 * time.Minute)
+	chain, err := s.Read(context.Background(), op, from, to, 0)
+	if err != nil {
+		t.Fatalf("read window: %v", err)
+	}
+	if len(chain.Events) != 3 {
+		t.Fatalf("expected 3 events in [1m,3m], got %d", len(chain.Events))
+	}
+	if !chain.Integrity.Intact {
+		t.Fatalf("intact chain must verify even with a time window: %+v", chain.Integrity)
+	}
+
+	// The window must not mask a tamper in a record outside the window:
+	// tamper seq 1 (the 0m event, outside [1m,3m]) and re-read the
+	// window — the verdict must still report the broken chain.
+	db := openRaw(t, path)
+	if _, err := db.Exec(`UPDATE audit_chain_events SET summary = 'forged' WHERE operation_id = ? AND seq = 1`, op); err != nil {
+		t.Fatalf("tamper outside window: %v", err)
+	}
+	wCh, err := s.Read(context.Background(), op, from, to, 0)
+	if err != nil {
+		t.Fatalf("read window after tamper: %v", err)
+	}
+	if !wCh.Integrity.Tampered || wCh.Integrity.FirstBadSeq != 1 {
+		t.Fatalf("a tamper outside the read window must still be reported: %+v", wCh.Integrity)
+	}
+}
+
+// assertNoPlaintext proves the marker is absent from the database AND its
+// WAL sidecar files. In WAL mode a freshly committed row may live in
+// audit.db-wal, so scanning only the main file proves nothing.
+func assertNoPlaintext(t *testing.T, dbPath, marker string) {
+	t.Helper()
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue // sidecar file may not exist yet
+		}
+		if strings.Contains(string(raw), marker) {
+			t.Fatalf("marker %q found in %s", marker, p)
+		}
+	}
+}
+
+// Snapshot capture is fail-closed: without a key the fields are dropped
+// (never stored in plaintext) and the record reports that.
+func TestSnapshotFailsClosedWithoutKey(t *testing.T) {
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-snap-005"
+	row, err := s.Append(context.Background(), Event{
+		OperationID: op,
+		Kind:        KindModelDecision,
+		Summary:     "model suggestion",
+		ModelInput:  "secret user prompt",
+		OccurredAt:  now,
+	}, nil)
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if row.SnapshotRecorded {
+		t.Fatalf("no key configured: snapshot must not be recorded")
+	}
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(chain.Events) != 1 || chain.Events[0].SnapshotRecorded {
+		t.Fatalf("record must report no snapshot without a key: %+v", chain.Events)
+	}
+	// Prove the plaintext was never persisted in the database or its WAL.
+	assertNoPlaintext(t, path, "secret user prompt")
+}
+
+// With a key the model context is captured encrypted, bound into the chain
+// hash, and — because the GCM nonce is stored in front of the ciphertext —
+// recoverable with the key via OpenSnapshot. An attacker changing the
+// encrypted blob must be detected.
+func TestSnapshotEncryptedTamperEvidentAndDecryptable(t *testing.T) {
+	key, _ := hex.DecodeString(strings.Repeat("ab", 32))
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	op := "op-snap-006"
+	const marker = "secret user prompt"
+	row, err := s.Append(context.Background(), Event{
+		OperationID: op, Kind: KindModelDecision,
+		Summary:    "model suggestion",
+		ModelInput: marker,
+		OccurredAt: now,
+	}, key)
+	if err != nil {
+		t.Fatalf("append with key: %v", err)
+	}
+	if !row.SnapshotRecorded {
+		t.Fatalf("with a key the snapshot must be recorded")
+	}
+	db := openRaw(t, path)
+	var blob []byte
+	if err := db.QueryRow(`SELECT snapshot FROM audit_chain_events WHERE operation_id = ? AND seq = 1`, op).Scan(&blob); err != nil {
+		t.Fatalf("read snapshot blob: %v", err)
+	}
+	if strings.Contains(string(blob), marker) {
+		t.Fatalf("snapshot must not store the plaintext model input")
+	}
+
+	// The sealed capture must be decryptable with the key (nonce is
+	// persisted in front of the ciphertext) and decryptable only with
+	// that key.
+	plain, err := OpenSnapshot(key, blob)
+	if err != nil {
+		t.Fatalf("OpenSnapshot with the key: %v", err)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(plain, &decoded); err != nil {
+		t.Fatalf("decrypted snapshot not JSON: %v", err)
+	}
+	if decoded["model_input"] != marker {
+		t.Fatalf("decrypted model_input = %q, want %q", decoded["model_input"], marker)
+	}
+	if _, err := OpenSnapshot([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, blob); err == nil {
+		t.Fatalf("OpenSnapshot must fail with a different key")
+	}
+
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !chain.Integrity.Intact {
+		t.Fatalf("encrypted chain must verify intact: %+v", chain.Integrity)
+	}
+
+	// Tamper the encrypted blob: the record hash must now fail.
+	if _, err := db.Exec(`UPDATE audit_chain_events SET snapshot = x'deadbeef' WHERE operation_id = ? AND seq = 1`, op); err != nil {
+		t.Fatalf("tamper blob: %v", err)
+	}
+	chain, err = s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read after tamper: %v", err)
+	}
+	if !chain.Integrity.Tampered {
+		t.Fatalf("swapping the encrypted snapshot must be detected: %+v", chain.Integrity)
+	}
+}
+
+// Every hash-bound field must be tamper-evident: a raw-SQL rewrite of each
+// one breaks the chain at that record. This pins the digest's field
+// coverage so a future hashInput change cannot silently drop a field.
+func TestEachHashBoundFieldIsTamperEvident(t *testing.T) {
+	now := testClock
+
+	// seq 2 is the record whose fields we rewrite one at a time; after each
+	// rewrite the chain must be tampered at seq 2.
+	cases := []struct {
+		col string
+		val string
+	}{
+		{"kind", "'forged_kind'"},
+		{"actor", "'forged_actor'"},
+		{"summary", "'forged_summary'"},
+		{"payload", "'{}'"},
+		{"auth_method", "'forged_auth'"},
+		{"occurred_at_ns", "123"},
+		{"prev_hash", "x'00'"},
+		{"hash", "x'00'"},
+	}
+	for _, c := range cases {
+		t.Run(c.col, func(t *testing.T) {
+			s2, path2 := testStore(t, func() time.Time { return now })
+			op2 := "op-fields-" + c.col
+			for i := 0; i < 2; i++ {
+				if _, err := s2.Append(context.Background(), Event{
+					OperationID: op2, Kind: KindResult,
+					Summary:    "step",
+					OccurredAt: now.Add(time.Duration(i) * time.Minute),
+				}, nil); err != nil {
+					t.Fatalf("append %d: %v", i, err)
+				}
+			}
+			db := openRaw(t, path2)
+			if _, err := db.Exec(
+				`UPDATE audit_chain_events SET `+c.col+` = `+c.val+
+					` WHERE operation_id = ? AND seq = 2`, op2); err != nil {
+				t.Fatalf("tamper %s: %v", c.col, err)
+			}
+			chain, err := s2.Read(context.Background(), op2, time.Time{}, time.Time{}, 0)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !chain.Integrity.Tampered || chain.Integrity.FirstBadSeq != 2 {
+				t.Fatalf("rewriting %s must break the chain at seq 2, got %+v", c.col, chain.Integrity)
+			}
+		})
+	}
+}
+
+// Concurrent appends to the same operation must all succeed with unique,
+// contiguous seqs — evidence must not be lost under write contention.
+func TestConcurrentAppendsSerialize(t *testing.T) {
+	now := testClock
+	s, _ := testStore(t, func() time.Time { return now })
+	op := "op-conc-011"
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_, err := s.Append(context.Background(), Event{
+				OperationID: op, Kind: KindResult,
+				Summary:    "concurrent " + string(rune('A'+n)),
+				OccurredAt: now.Add(time.Duration(n) * time.Millisecond),
+			}, nil)
+			errs[n] = err
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent append %d failed: %v", i, err)
+		}
+	}
+	chain, err := s.Read(context.Background(), op, time.Time{}, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(chain.Events) != workers {
+		t.Fatalf("expected %d records, got %d (lost evidence under concurrency)", workers, len(chain.Events))
+	}
+	for i, ev := range chain.Events {
+		if ev.Seq != int64(i+1) {
+			t.Fatalf("seq not contiguous at position %d: got %d", i, ev.Seq)
+		}
+	}
+	if !chain.Integrity.Intact {
+		t.Fatalf("concurrent chain must verify intact: %+v", chain.Integrity)
+	}
+}
+
+// A busy database must surface as ErrBusy (retryable) and the handler must
+// answer 503 with a static message — no raw driver text leaks to the
+// client. This exact mapping has failed review twice, so it is pinned
+// here.
+func TestBusyAppendMapsToErrBusyAnd503(t *testing.T) {
+	// Shrink the busy timeout so the real SQLITE_BUSY fires in ~50ms
+	// instead of waiting out the 5s production default.
+	prevBusy := busyTimeoutMS
+	busyTimeoutMS = 50
+	t.Cleanup(func() { busyTimeoutMS = prevBusy })
+
+	now := testClock
+	s, path := testStore(t, func() time.Time { return now })
+	// Seed one record so the table and WAL exist.
+	if _, err := s.Append(context.Background(), Event{
+		OperationID: "op-busy", Kind: KindResult,
+		Summary:    "seed",
+		OccurredAt: now,
+	}, nil); err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+
+	// Hold the write lock from a second connection for longer than the
+	// busy timeout, so an immediate-lock BEGIN in Append times out.
+	hold, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer hold.Close()
+	if _, err := hold.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("acquire write lock: %v", err)
+	}
+
+	_, err = s.Append(context.Background(), Event{
+		OperationID: "op-busy", Kind: KindResult,
+		Summary:    "contended",
+		OccurredAt: now.Add(time.Second),
+	}, nil)
+	// Release the lock before asserting so the cleanup path is clean;
+	// the append has already failed by the time this runs.
+	hold.Exec(`ROLLBACK`)
+
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("Append under contention must return ErrBusy, got %v", err)
+	}
+
+	// The handler maps ErrBusy to 503 with a static, driver-free body.
+	gin.SetMode(gin.TestMode)
+	h := NewHandler(s, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/audit/events",
+		strings.NewReader(`{"operation_id":"op-busy","kind":"result","summary":"contended"}`))
+	rr := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rr)
+	ginCtx.Request = req
+	ginCtx.Params = gin.Params{}
+	// Re-hold the lock so the handler's append also hits ErrBusy.
+	if _, err := hold.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("re-acquire write lock: %v", err)
+	}
+	defer hold.Exec(`ROLLBACK`)
+	h.Handle(ginCtx)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ErrBusy must map to 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	for _, leak := range []string{"SQLITE", "database is", "locked", "busy_timeout"} {
+		if strings.Contains(strings.ToLower(rr.Body.String()), leak) {
+			t.Fatalf("503 body leaked driver text %q: %s", leak, rr.Body.String())
+		}
+	}
+}
+
+// The management-auth boundary: when the channel handler is present, the
+// routes are mounted inside the authenticated group. This test asserts the
+// 404 "channel disabled" path and the handler method dispatch, the
+// server-side half of scenario 2 (no permission, no content).
+func TestHandlerMethodDispatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s, _ := testStore(t, func() time.Time { return testClock })
+	h := NewHandler(s, nil)
+
+	body := `{"operation_id":"op-http-007","kind":"result","summary":"done"}`
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/audit/events", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rr)
+	ginCtx.Request = req
+	ginCtx.Params = gin.Params{}
+	h.Handle(ginCtx)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("POST /audit/events = %d, want 201 (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	reqGet := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/op-http-007", nil)
+	rrGet := httptest.NewRecorder()
+	ginCtxGet, _ := gin.CreateTestContext(rrGet)
+	ginCtxGet.Request = reqGet
+	ginCtxGet.Params = gin.Params{{Key: "id", Value: "op-http-007"}}
+	h.Handle(ginCtxGet)
+	if rrGet.Code != http.StatusOK {
+		t.Fatalf("GET /audit/operations/op-http-007 = %d, want 200 (body: %s)", rrGet.Code, rrGet.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rrGet.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response not JSON: %v", err)
+	}
+	if resp["operation_id"] != "op-http-007" {
+		t.Fatalf("operation_id = %v, want op-http-007", resp["operation_id"])
+	}
+
+	reqMiss := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/none", nil)
+	rrMiss := httptest.NewRecorder()
+	ginCtxMiss, _ := gin.CreateTestContext(rrMiss)
+	ginCtxMiss.Request = reqMiss
+	ginCtxMiss.Params = gin.Params{{Key: "id", Value: "none"}}
+	h.Handle(ginCtxMiss)
+	if rrMiss.Code != http.StatusNotFound {
+		t.Fatalf("GET unknown operation = %d, want 404", rrMiss.Code)
+	}
+
+	// An oversized body is rejected before the field caps would matter.
+	big := strings.Repeat("a", maxBodyBytes+1)
+	reqBig := httptest.NewRequest(http.MethodPost, "/v0/management/audit/events", strings.NewReader(big))
+	rrBig := httptest.NewRecorder()
+	ginCtxBig, _ := gin.CreateTestContext(rrBig)
+	ginCtxBig.Request = reqBig
+	ginCtxBig.Params = gin.Params{}
+	h.Handle(ginCtxBig)
+	if rrBig.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body = %d, want 413", rrBig.Code)
+	}
+
+	// An invalid operation id is a 400, not a 500.
+	reqBad := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/bad%20id!", nil)
+	rrBad := httptest.NewRecorder()
+	ginCtxBad, _ := gin.CreateTestContext(rrBad)
+	ginCtxBad.Request = reqBad
+	ginCtxBad.Params = gin.Params{{Key: "id", Value: "bad id!"}}
+	h.Handle(ginCtxBad)
+	if rrBad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid operation id = %d, want 400", rrBad.Code)
+	}
+}
+
+// A disabled channel (nil handler) is the 404 path the api package serves.
+func TestHandlerNilStoreReportsUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewHandler(nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/audit/operations/x", nil)
+	rr := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(rr)
+	ginCtx.Request = req
+	ginCtx.Params = gin.Params{{Key: "id", Value: "x"}}
+	h.Handle(ginCtx)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("nil store must report 404, got %d", rr.Code)
+	}
+}
+
+// Invalid hex key config is fail-closed: capture disabled, not plaintext.
+func TestMalformedKeyIsFailClosed(t *testing.T) {
+	t.Setenv(EnvKeyHex, "zz")
+	if keyFromEnv() != nil {
+		t.Fatalf("malformed hex key must return nil (capture disabled)")
+	}
+}
+
+// ServerOption returns nil when the channel is disabled by default.
+func TestServerOptionDisabledByDefault(t *testing.T) {
+	t.Setenv(EnvEnabled, "")
+	if opt := ServerOption(); opt != nil {
+		t.Fatalf("ServerOption must be nil when the channel is off by default")
+	}
+}
+
+// ServerOption opens the database and returns an option when enabled.
+func TestServerOptionEnabled(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv(EnvEnabled, "true")
+	t.Setenv(EnvDBPath, filepath.Join(tmp, "audit.db"))
+	if opt := ServerOption(); opt == nil {
+		t.Fatalf("ServerOption must be non-nil when enabled and the db is openable")
+	}
+	info, err := os.Stat(filepath.Join(tmp, "audit.db"))
+	if err != nil {
+		t.Fatalf("audit db should exist: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("audit db must be 0600, got %o", info.Mode().Perm())
+	}
+}

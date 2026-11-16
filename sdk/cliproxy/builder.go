@@ -12,6 +12,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/arbitrage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auditchain"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -352,6 +353,16 @@ func (b *Builder) Build() (*Service, error) {
 	// /v0/management group, never on the bare engine.
 	if statusOpt := arbitrage.StatusServerOption(service.arbitrageRuntime); statusOpt != nil {
 		service.serverOptions = append(service.serverOptions, statusOpt)
+	}
+	// RIC-2686: audit chain of responsibility for high-risk actions.
+	// Registers GET /v0/management/audit/operations/:id and POST
+	// /v0/management/audit/events inside the authenticated management group,
+	// persisted to a local SQLite hash chain. Enabled via CPA_AUDIT_CHAIN_ENABLED
+	// (optionally CPA_AUDIT_CHAIN_DB_PATH / CPA_AUDIT_CHAIN_KEY_HEX for encrypted
+	// model context snapshots); off by default, so the default build mounts no
+	// routes and opens no database.
+	if auditOpt := auditchain.ServerOption(); auditOpt != nil {
+		service.serverOptions = append(service.serverOptions, auditOpt)
 	}
 	// RIC-2508: data-plane auto-trace channel. Reports one trace span per
 	// gateway model call to KEEPER's trace ingest endpoint, so applications
