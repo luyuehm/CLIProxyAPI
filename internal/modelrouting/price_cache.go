@@ -166,6 +166,25 @@ func (s Snapshot) Stale(now time.Time, horizon time.Duration) bool {
 	return now.Sub(s.SyncedAt) > horizon
 }
 
+// PriceSnapshot is the decision engine's immutable input: a value copy of one
+// complete price table. Because Apply builds a fresh map on every sync and
+// never mutates a published one, each Snapshot() handoff owns a table that is
+// safe to hold and read without further locking; two concurrent snapshots
+// are isolated from each other (parent scenario 5).
+type PriceSnapshot struct {
+	// Prices maps model name to its Price row; nil when never synced.
+	Prices map[string]Price
+	// SyncedAt is when this table was taken; zero means never synced.
+	SyncedAt time.Time
+}
+
+// PriceFor looks up one model in the snapshot. Found is false when the model
+// is not in this table.
+func (s PriceSnapshot) PriceFor(model string) (Price, bool) {
+	p, found := s.Prices[strings.TrimSpace(model)]
+	return p, found
+}
+
 // PriceCache is a concurrency-safe, daily-synced model price cache. The
 // whole table is swapped as one immutable generation under a write lock;
 // readers take a brief read lock and receive a complete snapshot, so two
@@ -216,6 +235,20 @@ func (c *PriceCache) Get() (map[string]Price, time.Time) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.snapshot.Prices, c.snapshot.SyncedAt
+}
+
+// Snapshot returns an isolated, decision-ready PriceSnapshot of the current
+// table. The map is one immutable generation (never mutated after
+// publication), so the caller may hold and read it without further locking —
+// this is the read-snapshot seam the decision engine relies on for
+// concurrent isolation.
+func (c *PriceCache) Snapshot() PriceSnapshot {
+	if c == nil {
+		return PriceSnapshot{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return PriceSnapshot{Prices: c.snapshot.Prices, SyncedAt: c.snapshot.SyncedAt}
 }
 
 // IsStale reports whether the current snapshot is older than horizon as of
