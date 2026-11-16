@@ -160,6 +160,7 @@ Full CLIProxyAPI management center with request-level monitoring and cost estima
 - Access: [docs/sdk-access.md](docs/sdk-access.md)
 - Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
 - Route detail (`?debug=true` routing audit): [docs/route-detail.md](docs/route-detail.md)
+- OpenRouter quickstart — model choice & fallback routing matrix: [docs/openrouter-routing.md](docs/openrouter-routing.md)
 - Custom Provider Example: `examples/custom-provider`
 
 ## Contributing

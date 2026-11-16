@@ -1,0 +1,20 @@
+name: docs-openrouter-matrix
+
+on:
+  pull_request:
+    paths:
+      - "docs/openrouter-routing.md"
+      - "test/openrouter_matrix.json"
+      - ".github/scripts/check-openrouter-matrix.sh"
+      - ".github/workflows/docs-openrouter-matrix.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check OpenRouter routing matrix against live catalog
+        run: bash .github/scripts/check-openrouter-matrix.sh
