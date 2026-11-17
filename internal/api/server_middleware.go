@@ -31,6 +31,8 @@ var corsExposedResponseHeaders = []string{
 	// X-Route-Detail carries the ?debug=true routing audit for streaming
 	// responses; browser clients must be able to read it.
 	"X-Route-Detail",
+	// X-OpenRouter-Route carries the always-on non-streaming routing header.
+	"X-OpenRouter-Route",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")

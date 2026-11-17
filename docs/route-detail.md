@@ -1,10 +1,37 @@
-# Routing Decision Visibility (`?debug=true`)
+# Routing Decision Visibility
 
 Automatic routing is a black box by default: a response names only the model,
 never the provider, the credential, or why a fallback happened. This makes it
 hard to attribute a cost spike or a latency shift to a concrete routing
-decision. The routing audit exposes that decision trail on demand, without
-changing the default response.
+decision. Non-streaming responses now carry a compact always-on
+`X-OpenRouter-Route` header, and the `?debug=true` routing audit exposes the
+full decision trail on demand without changing the default body.
+
+## Always-on non-streaming header
+
+Every non-streaming API response, including error responses, carries an
+`X-OpenRouter-Route` response header. Its value is a JSON object:
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-5.1",
+  "fallback_chain": ["anthropic", "openai"],
+  "failure_code": "upstream_503",
+  "failure_reason": "upstream overloaded"
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `provider` | string | The provider whose credential served the request. On a terminal failure it is the last provider attempted. |
+| `model` | string | The upstream model identifier used for the final attempt. |
+| `fallback_chain` | string[] | Ordered unique provider attempts when a fallback occurred. `[]` when nothing failed. |
+| `failure_code` | string | A short machine-readable failure code, e.g. `upstream_503`. Present only on error responses. |
+| `failure_reason` | string | A sanitized, client-safe one-line description of the terminal failure. Present only on error responses. |
+
+The header is exposed via CORS so browser clients can read it. It does not
+change the response body and it is not emitted on streaming responses.
 
 ## Enabling
 
@@ -16,11 +43,13 @@ Append the `debug` query parameter to the request. Only explicit truthy values
 POST /api/v1/chat/completions?debug=true
 ```
 
-When the flag is off, no routing metadata is produced and the response body is
-byte-for-byte identical to a request without the flag. The audit is strictly
-opt-in: a reporter is created only for debug-flagged requests, and the
-conductor's reporting helper returns immediately when no reporter is
-registered, so non-debug requests pay no bookkeeping cost.
+When the flag is off, no routing metadata is added to the response body and
+the body is byte-for-byte identical to a request without the flag. The
+`X-OpenRouter-Route` header is still present on non-streaming responses. The
+full audit is strictly opt-in: the route_info reporter is created only for
+debug-flagged requests, and the conductor's reporting helper returns
+immediately when no reporter is registered, so non-debug requests pay no
+bookkeeping cost beyond the always-on header.
 
 ## Where the payload lands
 
@@ -86,4 +115,5 @@ are not included.
 - `sdk/cliproxy/auth/route_reporting.go` — the conductor's reporting helper.
 - `sdk/api/handlers/route_info.go` — the collector, debug-flag parsing, and
   JSON/header injection.
-- `internal/api/server_middleware.go` — CORS exposure of `X-Route-Detail`.
+- `internal/api/server_middleware.go` — CORS exposure of `X-Route-Detail` and
+  `X-OpenRouter-Route`.

@@ -93,13 +93,14 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	routeInfoCollector := h.newRouteInfoCollector(ctx, providers, routeDecision.Provider != "")
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
 	if routeInfoCollector != nil {
 		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
 	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
@@ -111,10 +112,12 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		// and the pool could not be served, surface the contract's 503
 		// route_boundary_violation instead of the raw credential error.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			setOpenRouterRouteError(boundaryErr, routeInfoCollector, ctx)
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
 		}
 		errMsg := executionErrorMessage(err)
+		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -123,7 +126,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
-	if routeInfoCollector != nil {
+	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
+	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
 		body = routeInfoCollector.InjectIntoJSON(ctx, body)
 	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
@@ -181,9 +185,14 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
@@ -194,10 +203,12 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		// RIC-2532-A: surface the contract's 503 route_boundary_violation
 		// when a boundary-constrained pool could not be served.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			setOpenRouterRouteError(boundaryErr, routeInfoCollector, ctx)
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
 		}
 		errMsg := executionErrorMessage(err)
+		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -206,6 +217,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -218,17 +230,20 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	if host == nil {
 		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("plugin executor host is unavailable")}
 	}
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(nil, false, modelName)
 	execCtx, nestedTracker := withNestedExecutionTracker(coreusage.WithStream(ctx, false))
 	req, opts := h.pluginExecutorRequest(execCtx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(execCtx, entryProtocol, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(execCtx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, execCtx)
 		lifecycle.completeError(execCtx, interceptErr)
 		return nil, nil, interceptErr
 	}
 	req, opts, interceptErr = h.applyRequestInterceptorsAfterPluginExecutorRoute(execCtx, host, executorPluginID, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, execCtx)
 		lifecycle.completeError(execCtx, interceptErr)
 		return nil, nil, interceptErr
 	}
@@ -244,6 +259,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 			reporter.PublishFailure(execCtx, errExecute)
 		}
 		errMsg := executionErrorMessage(errExecute)
+		setOpenRouterRouteError(errMsg, routeInfoCollector, execCtx)
 		lifecycle.completeError(execCtx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -255,6 +271,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, execCtx)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -267,16 +284,19 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	if host == nil {
 		return nil, nil, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("plugin executor host is unavailable")}
 	}
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(nil, false, modelName)
 	req, opts := h.pluginExecutorRequest(ctx, handlerType, handlerType, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(ctx, handlerType, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
 	req, opts, interceptErr = h.applyRequestInterceptorsAfterPluginExecutorRoute(ctx, host, executorPluginID, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
@@ -284,12 +304,14 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	resp, errCount := host.CountPluginExecutor(ctx, executorPluginID, req, opts)
 	if errCount != nil {
 		errMsg := executionErrorMessage(errCount)
+		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

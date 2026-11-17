@@ -97,6 +97,22 @@ func TestReportRouteEventSuccessHasNoError(t *testing.T) {
 	}
 }
 
+func TestReportRouteEventInfersUpstreamCodeFromStatus(t *testing.T) {
+	reporter := &recordingRouteReporter{}
+	opts := cliproxyexecutor.Options{Metadata: map[string]any{
+		cliproxyexecutor.RouteInfoReporterMetadataKey: reporter,
+	}}
+	reportRouteEvent(opts, "provider-x", &Auth{ID: "auth-a", Index: "1"}, "m", cliproxyexecutor.RouteOutcomeFailed, &Error{Message: "upstream overloaded", HTTPStatus: http.StatusServiceUnavailable})
+
+	events := reporter.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Code != "upstream_503" {
+		t.Fatalf("code = %q, want upstream_503", events[0].Code)
+	}
+}
+
 func TestSanitizedRouteEventErrorRedacts(t *testing.T) {
 	redacted := sanitizedRouteEventError(&Error{Message: `Authorization: Bearer sk-secret-token-123 failed`})
 	if redacted == "" {

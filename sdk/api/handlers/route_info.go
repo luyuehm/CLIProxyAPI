@@ -12,6 +12,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"golang.org/x/net/context"
@@ -25,6 +26,10 @@ const (
 	// channel available for streaming responses, where the body cannot be
 	// mutated after the first chunk is committed.
 	RouteDetailResponseHeader = "X-Route-Detail"
+	// OpenRouterRouteHeader is the always-on non-streaming response header
+	// that exposes the provider, model, fallback chain, and terminal failure
+	// code for one request.
+	OpenRouterRouteHeader = "X-OpenRouter-Route"
 	// routeInfoResponseField is the non-streaming response body field.
 	routeInfoResponseField = "route_info"
 )
@@ -42,6 +47,7 @@ type RouteInfoCollector struct {
 	mu           sync.Mutex
 	candidates   []string
 	routerRouted bool
+	model        string
 	events       []coreexecutor.RouteEvent
 }
 
@@ -49,8 +55,13 @@ type RouteInfoCollector struct {
 // ordered provider list resolved for the request; routerRouted reports whether
 // a model router pinned the final provider.
 func NewRouteInfoCollector(candidates []string, routerRouted bool) *RouteInfoCollector {
-	collector := &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted}
-	return collector
+	return NewRouteInfoCollectorWithModel(candidates, routerRouted, "")
+}
+
+// NewRouteInfoCollectorWithModel builds a collector for one request and keeps
+// the normalized model as a fallback when no route event carries a model.
+func NewRouteInfoCollectorWithModel(candidates []string, routerRouted bool, model string) *RouteInfoCollector {
+	return &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted, model: model}
 }
 
 // ReportEvent records one routing attempt. Safe for concurrent use.
@@ -83,6 +94,15 @@ type routeInfoBody struct {
 	SelectionReason string               `json:"selection_reason"`
 	Candidates      []string             `json:"candidates"`
 	FallbackEvents  []routeInfoEventBody `json:"fallback_events"`
+}
+
+// openRouterRouteBody is the compact payload for X-OpenRouter-Route.
+type openRouterRouteBody struct {
+	Provider      string   `json:"provider"`
+	Model         string   `json:"model,omitempty"`
+	FallbackChain []string `json:"fallback_chain"`
+	FailureCode   string   `json:"failure_code,omitempty"`
+	FailureReason string   `json:"failure_reason,omitempty"`
 }
 
 // buildBody renders the collected routing outcome. A nil collector yields an
@@ -149,6 +169,78 @@ func (c *RouteInfoCollector) selectionReason(finalProvider string, failedAttempt
 	}
 }
 
+// OpenRouterRoute renders the always-on non-streaming routing header value.
+// It returns an empty string when no routing information is available so
+// callers can skip the header without a guard.
+func (c *RouteInfoCollector) OpenRouterRoute(ctx context.Context) string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	events := append([]coreexecutor.RouteEvent(nil), c.events...)
+	fallbackModel := c.model
+	c.mu.Unlock()
+
+	body := openRouterRouteBody{FallbackChain: []string{}}
+	finalProvider := ""
+	succeeded := false
+	lastModel := fallbackModel
+	failureCode := ""
+	failureReason := ""
+	seenFailed := make(map[string]struct{})
+	for _, event := range events {
+		if event.Model != "" {
+			lastModel = event.Model
+		}
+		switch event.Outcome {
+		case coreexecutor.RouteOutcomeSuccess:
+			finalProvider = event.Provider
+			succeeded = true
+		default:
+			if event.Code != "" {
+				failureCode = event.Code
+			}
+			if event.Error != "" {
+				failureReason = event.Error
+			}
+			if event.Provider != "" {
+				if _, seen := seenFailed[event.Provider]; !seen {
+					seenFailed[event.Provider] = struct{}{}
+					body.FallbackChain = append(body.FallbackChain, event.Provider)
+				}
+			}
+		}
+	}
+	if finalProvider == "" {
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Provider != "" && events[i].Outcome != coreexecutor.RouteOutcomeSuccess {
+				finalProvider = events[i].Provider
+				break
+			}
+		}
+	} else if len(body.FallbackChain) > 0 && body.FallbackChain[len(body.FallbackChain)-1] != finalProvider {
+		body.FallbackChain = append(body.FallbackChain, finalProvider)
+	}
+	if succeeded {
+		// A provider completed the request successfully, so the terminal
+		// failure fields are meaningful only when every candidate failed.
+		failureCode = ""
+		failureReason = ""
+	}
+	body.Provider = finalProvider
+	body.Model = lastModel
+	body.FailureCode = failureCode
+	body.FailureReason = failureReason
+	if body.FallbackChain == nil {
+		body.FallbackChain = []string{}
+	}
+	data, errMarshal := json.Marshal(body)
+	if errMarshal != nil {
+		return ""
+	}
+	return string(data)
+}
+
 // JSON marshals the route_info body, or returns "" on failure. A nil
 // collector returns "" so callers can skip the header without a guard.
 func (c *RouteInfoCollector) JSON(ctx context.Context) string {
@@ -210,6 +302,12 @@ func (h *BaseAPIHandler) newRouteInfoCollector(ctx context.Context, candidates [
 	return NewRouteInfoCollector(candidates, routerRouted)
 }
 
+// newAlwaysRouteInfoCollector returns a collector for every non-streaming
+// request so the gateway can always emit X-OpenRouter-Route.
+func (h *BaseAPIHandler) newAlwaysRouteInfoCollector(candidates []string, routerRouted bool, model string) *RouteInfoCollector {
+	return NewRouteInfoCollectorWithModel(candidates, routerRouted, model)
+}
+
 // routeInfoHeaders ensures a header map suitable for the X-Route-Detail
 // response header. Streaming responses normally carry no downstream header map
 // unless passthrough is enabled, so a collector needs one allocated.
@@ -232,4 +330,31 @@ func attachRouteInfoToHeaders(headers http.Header, collector *RouteInfoCollector
 	if value := collector.JSON(ctx); value != "" {
 		headers.Set(RouteDetailResponseHeader, value)
 	}
+}
+
+// attachOpenRouterRouteToHeaders sets X-OpenRouter-Route on a non-streaming
+// response header map. It allocates the map when needed and is a no-op when
+// the collector has no routable information.
+func attachOpenRouterRouteToHeaders(headers http.Header, collector *RouteInfoCollector, ctx context.Context) http.Header {
+	if collector == nil {
+		return headers
+	}
+	value := collector.OpenRouterRoute(ctx)
+	if value == "" {
+		return headers
+	}
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set(OpenRouterRouteHeader, value)
+	return headers
+}
+
+// setOpenRouterRouteError carries the routing header to an error response so
+// WriteErrorResponse can emit it unconditionally.
+func setOpenRouterRouteError(errMsg *interfaces.ErrorMessage, collector *RouteInfoCollector, ctx context.Context) {
+	if errMsg == nil || collector == nil {
+		return
+	}
+	errMsg.RouteInfoHeader = collector.OpenRouterRoute(ctx)
 }

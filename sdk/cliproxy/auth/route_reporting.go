@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -40,6 +41,9 @@ func reportRouteEvent(opts cliproxyexecutor.Options, provider string, auth *Auth
 	if resultErr != nil {
 		event.Status = resultErr.HTTPStatus
 		event.Code = resultErr.Code
+		if event.Code == "" && event.Status > 0 {
+			event.Code = fmt.Sprintf("upstream_%d", event.Status)
+		}
 		event.Error = sanitizedRouteEventError(resultErr)
 	}
 	reporter.ReportEvent(event)
