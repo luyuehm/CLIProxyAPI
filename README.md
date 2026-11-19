@@ -161,6 +161,7 @@ Full CLIProxyAPI management center with request-level monitoring and cost estima
 - Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
 - Route detail (`?debug=true` routing audit): [docs/route-detail.md](docs/route-detail.md)
 - Audit chain of responsibility (high-risk action evidence log): [docs/audit-chain.md](docs/audit-chain.md)
+- MCP tool definitions for `/v1/messages`: [docs/mcp-tool-definitions.md](docs/mcp-tool-definitions.md)
 - Custom Provider Example: `examples/custom-provider`
 
 ## Contributing
