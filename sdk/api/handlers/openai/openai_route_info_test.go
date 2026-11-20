@@ -318,3 +318,146 @@ func TestRouteInfoOpenRouterHeaderOnError(t *testing.T) {
 		t.Fatalf("failure_code = %v, want upstream_503", info["failure_code"])
 	}
 }
+
+// routeInfoFallbackProviderExecutor serves a fixed response per provider.
+// provider modelA fails with 503 every time; providerB succeeds.
+type routeInfoFallbackProviderExecutor struct {
+	mu        sync.Mutex
+	attempts  []string
+	firstFail bool
+}
+
+func (*routeInfoFallbackProviderExecutor) Identifier() string { return "fallback-provider-a" }
+
+func (e *routeInfoFallbackProviderExecutor) Execute(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+	e.mu.Lock()
+	e.attempts = append(e.attempts, auth.ID)
+	first := e.firstFail
+	e.firstFail = false
+	e.mu.Unlock()
+	if first {
+		return coreexecutor.Response{}, &coreauth.Error{Code: "upstream_503", Message: "provider overloaded", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	return coreexecutor.Response{Payload: []byte(`{"id":"chatcmpl-fallback","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`)}, nil
+}
+
+func (e *routeInfoFallbackProviderExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	if _, err := e.Execute(ctx, auth, req, opts); err != nil {
+		return nil, err
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"id":"chatcmpl-fb-stream","object":"chat.completion.chunk","choices":[]}`)}
+	close(chunks)
+	return &coreexecutor.StreamResult{Headers: http.Header{}, Chunks: chunks}, nil
+}
+
+func (*routeInfoFallbackProviderExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (*routeInfoFallbackProviderExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (*routeInfoFallbackProviderExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+// buildCrossProviderFallbackHandler wires two providers for the same model:
+// providerA fails once, providerB serves the request, so the conductor must
+// fall back across providers and the always-on X-OpenRouter-Fallback header
+// must appear on the response.
+func buildCrossProviderFallbackHandler(t *testing.T) (*OpenAIAPIHandler, *routeInfoFallbackProviderExecutor) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	executorA := &routeInfoFallbackProviderExecutor{firstFail: true}
+	executorB := &routeInfoFallbackProviderExecutor{firstFail: false}
+	mgr := coreauth.NewManager(nil, nil, nil)
+	mgr.SetRetryConfig(2, 0, 4)
+	// Register two executors with distinct provider identifiers.
+	regA := registry.GetGlobalRegistry()
+	_ = regA
+	// The manager maps auths onto executors by auth.Provider; register each
+	// auth under its provider key and register the executor alias for it.
+	mgr.RegisterExecutor(&providerAliasExecutor{executorA, "provider-a"})
+	mgr.RegisterExecutor(&providerAliasExecutor{executorB, "provider-b"})
+
+	authA := &coreauth.Auth{ID: "auth-a", Provider: "provider-a", Status: coreauth.StatusActive, Index: "1"}
+	if _, err := mgr.Register(context.Background(), authA); err != nil {
+		t.Fatalf("register auth-a: %v", err)
+	}
+	authB := &coreauth.Auth{ID: "auth-b", Provider: "provider-b", Status: coreauth.StatusActive, Index: "2"}
+	if _, err := mgr.Register(context.Background(), authB); err != nil {
+		t.Fatalf("register auth-b: %v", err)
+	}
+	// Both providers serve the same model, so GetProviderName resolves to
+	// ["provider-a","provider-b"] in registration order.
+	registry.GetGlobalRegistry().RegisterClient(authA.ID, "provider-a", []*registry.ModelInfo{{ID: fallbackRouteTestModel}})
+	registry.GetGlobalRegistry().RegisterClient(authB.ID, "provider-b", []*registry.ModelInfo{{ID: fallbackRouteTestModel}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(authA.ID)
+		registry.GetGlobalRegistry().UnregisterClient(authB.ID)
+	})
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, mgr)
+	return NewOpenAIAPIHandler(base), executorA
+}
+
+// providerAliasExecutor exposes an executor under a distinct provider key.
+type providerAliasExecutor struct {
+	coreauth.ProviderExecutor
+	provider string
+}
+
+func (e *providerAliasExecutor) Identifier() string { return e.provider }
+
+const fallbackRouteTestModel = "fallback-route-test-model"
+
+// Scenario 1 end-to-end: modelA (provider-a) fails and provider-b serves via a
+// different provider for the same model. The response must carry
+// X-OpenRouter-Fallback naming the provider move.
+func TestOpenRouterFallbackHeaderEndToEnd(t *testing.T) {
+	h, executorA := buildCrossProviderFallbackHandler(t)
+	recorder := postChatCompletions(h, "", `{"model":"`+fallbackRouteTestModel+`","messages":[{"role":"user","content":"hi"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	value := recorder.Header().Get(handlers.OpenRouterFallbackHeader)
+	if value == "" {
+		t.Fatalf("missing X-OpenRouter-Fallback on a cross-provider fallback response")
+	}
+	if !strings.Contains(value, "provider-a") || !strings.Contains(value, "provider-b") {
+		t.Fatalf("fallback header %q must name the provider move provider-a->provider-b", value)
+	}
+	if !strings.Contains(value, "reason:") {
+		t.Fatalf("fallback header %q must carry a failure reason", value)
+	}
+	if len(executorA.attempts) < 1 {
+		t.Fatal("provider-a never attempted")
+	}
+}
+
+// A same-provider, same-model credential retry is not a routing fallback: the
+// X-OpenRouter-Fallback header must be absent on the full HTTP path, matching
+// the "no fallback happened" acceptance criteria. A direct success on a
+// single credential is covered the same way.
+func TestRouteInfoFallbackHeaderAbsentOnCredentialRetryAndDirectSuccess(t *testing.T) {
+	t.Run("direct success", func(t *testing.T) {
+		h, _ := buildRouteInfoHandler(t, []string{"auth-a"}, nil)
+		recorder := postChatCompletions(h, "", `{"model":"`+routeInfoTestModel+`","messages":[{"role":"user","content":"hi"}]}`)
+		if got := recorder.Header().Get(handlers.OpenRouterFallbackHeader); got != "" {
+			t.Fatalf("X-OpenRouter-Fallback must be absent on a direct success, got %q", got)
+		}
+	})
+	t.Run("credential retry same provider/model", func(t *testing.T) {
+		h, _ := buildRouteInfoHandler(t, []string{"auth-1-primary", "auth-2-backup"}, map[string]struct{}{"auth-1-primary": {}})
+		recorder := postChatCompletions(h, "", `{"model":"`+routeInfoTestModel+`","messages":[{"role":"user","content":"hi"}]}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", recorder.Code, recorder.Body.String())
+		}
+		// The conductor retried another credential of the same provider and
+		// model; the client-visible service path did not change, so no marker.
+		if got := recorder.Header().Get(handlers.OpenRouterFallbackHeader); got != "" {
+			t.Fatalf("X-OpenRouter-Fallback must be absent on a same-target retry, got %q", got)
+		}
+	})
+}

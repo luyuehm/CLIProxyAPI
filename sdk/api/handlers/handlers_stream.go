@@ -44,6 +44,10 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 	execCtx, nestedTracker := withNestedExecutionTracker(coreusage.WithStream(ctx, true))
 	req, opts := h.pluginExecutorRequest(execCtx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, true, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(execCtx, entryProtocol, modelName, originalRequestedModel, true, opts.Metadata, execOptions.SkipInterceptorPluginID)
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(nil, false, modelName)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(execCtx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
@@ -72,6 +76,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		if reporter != nil && !nestedTracker.hasNestedExecution() {
 			reporter.PublishFailure(execCtx, errStream)
 		}
+		routeInfoCollector.logFallbackIfAny()
 		errMsg := executionErrorMessage(errStream)
 		lifecycle.completeError(execCtx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
@@ -126,6 +131,15 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
 	if upstreamHeaders == nil && (passthroughHeadersEnabled || streamInterceptorsActive) {
 		upstreamHeaders = make(http.Header)
+	}
+	if routeInfoCollector != nil {
+		if fallbackValue := routeInfoCollector.OpenRouterFallback(); fallbackValue != "" {
+			if upstreamHeaders == nil {
+				upstreamHeaders = make(http.Header)
+			}
+			upstreamHeaders.Set(OpenRouterFallbackHeader, fallbackValue)
+		}
+		routeInfoCollector.logFallbackIfAny()
 	}
 
 	dataChan := make(chan []byte)
@@ -357,7 +371,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	routeInfoCollector := h.newRouteInfoCollector(ctx, providers, routeDecision.Provider != "")
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
 	if routeInfoCollector != nil {
 		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
 	}
@@ -377,6 +391,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		// RIC-2532-A: surface the contract's 503 route_boundary_violation
 		// when a boundary-constrained pool could not be served.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			errChan := make(chan *interfaces.ErrorMessage, 1)
 			errChan <- boundaryErr
@@ -384,6 +399,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			return nil, nil, errChan
 		}
 		errMsg := executionErrorMessage(err)
+		routeInfoCollector.logFallbackIfAny()
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -392,6 +408,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 	if streamResult == nil {
 		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("auth manager returned nil stream")}
+		routeInfoCollector.logFallbackIfAny()
 		lifecycle.completeError(ctx, errMsg)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -616,12 +633,23 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
-	upstreamHeaders = routeInfoHeaders(upstreamHeaders, routeInfoCollector)
-	if upstreamHeaders == nil && (passthroughHeadersEnabled || streamInterceptorsActive) {
-		upstreamHeaders = make(http.Header)
-	}
+	// Allocate a downstream header map only when a header value must actually
+	// be emitted (debug route audit or a fallback marker), so a default
+	// streaming response with neither keeps nil headers.
 	if routeInfoCollector != nil {
-		attachRouteInfoToHeaders(upstreamHeaders, routeInfoCollector, ctx)
+		if routeInfoDebugEnabled(ctx) {
+			if upstreamHeaders == nil {
+				upstreamHeaders = make(http.Header)
+			}
+			attachRouteInfoToHeaders(upstreamHeaders, routeInfoCollector, ctx)
+		}
+		if fallbackValue := routeInfoCollector.OpenRouterFallback(); fallbackValue != "" {
+			if upstreamHeaders == nil {
+				upstreamHeaders = make(http.Header)
+			}
+			upstreamHeaders.Set(OpenRouterFallbackHeader, fallbackValue)
+		}
+		routeInfoCollector.logFallbackIfAny()
 	}
 	dataChan := make(chan []byte)
 	errChan := make(chan *interfaces.ErrorMessage, 1)

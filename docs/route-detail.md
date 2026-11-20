@@ -1,5 +1,54 @@
 # Routing Decision Visibility
 
+## On-by-default fallback marker (`X-OpenRouter-Fallback`)
+
+Every API response — streaming and non-streaming — now carries an always-on
+`X-OpenRouter-Fallback` response header **when a fallback actually occurred**
+during the request: one model/provider attempt failed and a different model or
+provider served the request.
+
+```
+X-OpenRouter-Fallback: modelA->modelB (reason: upstream_503)
+```
+
+The value is the compact `failedModel->servingModel` pair plus the sanitized
+failure reason of the first failed attempt. The reason is a bounded
+machine-readable code (e.g. `upstream_503`) when one exists, otherwise a
+capped, client-safe description. Both models are stripped of any non-printable
+ASCII so a client-supplied name can never inject a header line.
+
+The header is **absent** when:
+
+- **No fallback happened** — a direct success on the first attempt (no
+  fallback configuration to report).
+- **Every candidate failed** — the request returned an error; the error body
+  carries the final error, so the header would not add information.
+- **An internal credential retry** — a failure followed by a success on the
+  *same* model and provider is an internal availability retry, not a routing
+  fallback. Only a move to a different model or provider emits the marker.
+
+Streaming responses carry the header too: the routing outcome is known before
+the first chunk is committed (bootstrap retries resolve before headers are
+sent), so the marker reaches the client through the response header of the
+stream.
+
+The header is exposed via CORS so browser clients can read it.
+
+## Structured fallback log
+
+Every request that fell back also emits a structured log line carrying the
+failed chain and the model that served the request:
+
+```
+route: fallback event served  served_model=modelB fallback_chain=[{model:modelA status:503 code:upstream_503 reason:upstream_503}]
+```
+
+When the whole chain failed, the line is emitted at WARN level with no
+`served_model`, so a production incident has an auditable trail of every
+failed candidate and the final reason.
+
+## Debug routing audit (`?debug=true`)
+
 Automatic routing is a black box by default: a response names only the model,
 never the provider, the credential, or why a fallback happened. This makes it
 hard to attribute a cost spike or a latency shift to a concrete routing
@@ -113,7 +162,12 @@ are not included.
 
 - `sdk/cliproxy/executor/route_info.go` — the reporter interface and event type.
 - `sdk/cliproxy/auth/route_reporting.go` — the conductor's reporting helper.
-- `sdk/api/handlers/route_info.go` — the collector, debug-flag parsing, and
-  JSON/header injection.
-- `internal/api/server_middleware.go` — CORS exposure of `X-Route-Detail` and
-  `X-OpenRouter-Route`.
+- `sdk/api/handlers/route_info.go` — the collector, debug-flag parsing,
+  `X-OpenRouter-Route` and `X-OpenRouter-Fallback` rendering, JSON/header
+  injection, and the structured fallback log.
+- `sdk/api/handlers/handlers_execution.go` — always-on collector wiring and
+  route/fallback header attachment on the non-streaming paths.
+- `sdk/api/handlers/handlers_stream.go` — fallback header attachment and
+  fallback logging on the streaming paths.
+- `internal/api/server_middleware.go` — CORS exposure of `X-Route-Detail`,
+  `X-OpenRouter-Route`, and `X-OpenRouter-Fallback`.

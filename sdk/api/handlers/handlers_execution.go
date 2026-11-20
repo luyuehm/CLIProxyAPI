@@ -113,11 +113,13 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		// route_boundary_violation instead of the raw credential error.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
 			setOpenRouterRouteError(boundaryErr, routeInfoCollector, ctx)
+			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
 		}
 		errMsg := executionErrorMessage(err)
 		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
+		routeInfoCollector.logFallbackIfAny()
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -127,6 +129,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
 		body = routeInfoCollector.InjectIntoJSON(ctx, body)
 	}
@@ -204,11 +208,13 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		// when a boundary-constrained pool could not be served.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
 			setOpenRouterRouteError(boundaryErr, routeInfoCollector, ctx)
+			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
 		}
 		errMsg := executionErrorMessage(err)
 		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
+		routeInfoCollector.logFallbackIfAny()
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -218,6 +224,8 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -234,6 +242,9 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	execCtx, nestedTracker := withNestedExecutionTracker(coreusage.WithStream(ctx, false))
 	req, opts := h.pluginExecutorRequest(execCtx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(execCtx, entryProtocol, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(execCtx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
@@ -258,6 +269,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 		if reporter != nil && !nestedTracker.hasNestedExecution() {
 			reporter.PublishFailure(execCtx, errExecute)
 		}
+		routeInfoCollector.logFallbackIfAny()
 		errMsg := executionErrorMessage(errExecute)
 		setOpenRouterRouteError(errMsg, routeInfoCollector, execCtx)
 		lifecycle.completeError(execCtx, errMsg)
@@ -272,6 +284,8 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, execCtx)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -287,6 +301,9 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	routeInfoCollector := h.newAlwaysRouteInfoCollector(nil, false, modelName)
 	req, opts := h.pluginExecutorRequest(ctx, handlerType, handlerType, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(ctx, handlerType, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
@@ -303,6 +320,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	resp, errCount := host.CountPluginExecutor(ctx, executorPluginID, req, opts)
 	if errCount != nil {
+		routeInfoCollector.logFallbackIfAny()
 		errMsg := executionErrorMessage(errCount)
 		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, errMsg)
@@ -312,6 +330,8 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
