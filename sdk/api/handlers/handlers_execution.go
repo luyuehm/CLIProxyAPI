@@ -93,7 +93,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	routeInfoCollector := h.newRouteInfoCollector(ctx, providers, routeDecision.Provider != "")
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
 	if routeInfoCollector != nil {
 		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
 	}
@@ -111,10 +111,12 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		// and the pool could not be served, surface the contract's 503
 		// route_boundary_violation instead of the raw credential error.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
 		}
 		errMsg := executionErrorMessage(err)
+		routeInfoCollector.logFallbackIfAny()
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -123,7 +125,9 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
-	if routeInfoCollector != nil {
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
+	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
 		body = routeInfoCollector.InjectIntoJSON(ctx, body)
 	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
@@ -181,6 +185,10 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	opts.Metadata = reqMeta
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
@@ -194,10 +202,12 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		// RIC-2532-A: surface the contract's 503 route_boundary_violation
 		// when a boundary-constrained pool could not be served.
 		if boundaryErr := h.translateRouteBoundaryExecutionError(ctx, err, normalizedModel); boundaryErr != nil {
+			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
 		}
 		errMsg := executionErrorMessage(err)
+		routeInfoCollector.logFallbackIfAny()
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -206,6 +216,8 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -221,6 +233,10 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	execCtx, nestedTracker := withNestedExecutionTracker(coreusage.WithStream(ctx, false))
 	req, opts := h.pluginExecutorRequest(execCtx, entryProtocol, responseProtocol, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(execCtx, entryProtocol, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(nil, false, modelName)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(execCtx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
@@ -243,6 +259,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 		if reporter != nil && !nestedTracker.hasNestedExecution() {
 			reporter.PublishFailure(execCtx, errExecute)
 		}
+		routeInfoCollector.logFallbackIfAny()
 		errMsg := executionErrorMessage(errExecute)
 		lifecycle.completeError(execCtx, errMsg)
 		return nil, nil, errMsg
@@ -255,6 +272,8 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -269,6 +288,10 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	}
 	req, opts := h.pluginExecutorRequest(ctx, handlerType, handlerType, modelName, originalRequestedModel, rawJSON, alt, false, execOptions)
 	lifecycle := h.newRequestLifecycleTracker(ctx, handlerType, modelName, originalRequestedModel, false, opts.Metadata, execOptions.SkipInterceptorPluginID)
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(nil, false, modelName)
+	if routeInfoCollector != nil {
+		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
@@ -283,6 +306,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	resp, errCount := host.CountPluginExecutor(ctx, executorPluginID, req, opts)
 	if errCount != nil {
+		routeInfoCollector.logFallbackIfAny()
 		errMsg := executionErrorMessage(errCount)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
@@ -290,6 +314,8 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

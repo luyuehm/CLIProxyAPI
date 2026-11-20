@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
@@ -25,9 +26,27 @@ const (
 	// channel available for streaming responses, where the body cannot be
 	// mutated after the first chunk is committed.
 	RouteDetailResponseHeader = "X-Route-Detail"
+	// OpenRouterFallbackHeader is the always-on response header that reports
+	// a fallback when one actually occurred during a request. It is absent
+	// when no fallback happened: a direct success, a request with no routing
+	// events, or a terminal failure where every candidate failed (the error
+	// body carries the final error).
+	OpenRouterFallbackHeader = "X-OpenRouter-Fallback"
 	// routeInfoResponseField is the non-streaming response body field.
 	routeInfoResponseField = "route_info"
 )
+
+// fallbackHeaderMaxLen bounds the compact X-OpenRouter-Fallback value so a
+// verbose sanitized reason cannot exceed HTTP header size limits. The
+// fallback-reason suffix is capped tighter (fallbackReasonMaxLen).
+const (
+	fallbackHeaderMaxLen = 512
+	fallbackReasonMaxLen = 200
+)
+
+// routeInfoLog is the package-level structured logger for the routing
+// observability surface.
+var routeInfoLog = logrus.WithField("component", "handlers.route_info")
 
 // routeInfoMaxFallbackEvents bounds the per-request fallback event list so a
 // pathological retry loop cannot bloat the response.
@@ -42,6 +61,7 @@ type RouteInfoCollector struct {
 	mu           sync.Mutex
 	candidates   []string
 	routerRouted bool
+	model        string
 	events       []coreexecutor.RouteEvent
 }
 
@@ -49,8 +69,13 @@ type RouteInfoCollector struct {
 // ordered provider list resolved for the request; routerRouted reports whether
 // a model router pinned the final provider.
 func NewRouteInfoCollector(candidates []string, routerRouted bool) *RouteInfoCollector {
-	collector := &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted}
-	return collector
+	return NewRouteInfoCollectorWithModel(candidates, routerRouted, "")
+}
+
+// NewRouteInfoCollectorWithModel builds a collector for one request and keeps
+// the normalized model as a fallback when no route event carries a model.
+func NewRouteInfoCollectorWithModel(candidates []string, routerRouted bool, model string) *RouteInfoCollector {
+	return &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted, model: model}
 }
 
 // ReportEvent records one routing attempt. Safe for concurrent use.
@@ -149,6 +174,164 @@ func (c *RouteInfoCollector) selectionReason(finalProvider string, failedAttempt
 	}
 }
 
+// OpenRouterFallback renders the always-on fallback marker for one request.
+// It returns "" when no fallback actually occurred, so the header is absent:
+//
+//   - a direct success with no failed attempts (no fallback configured);
+//   - a terminal failure where every candidate failed (the final error is in
+//     the response body, not the header);
+//   - a nil collector or no routing events (nothing to report).
+//
+// When a failed attempt was followed by a serving success, the value is the
+// compact "failedModel->servingModel" chain plus the sanitized failure reason
+// of the first failed attempt, header-safe and bounded:
+//
+//	X-OpenRouter-Fallback: modelA->modelB (reason: provider_A_503)
+func (c *RouteInfoCollector) OpenRouterFallback() string {
+	if c == nil {
+		return ""
+	}
+	attempts := c.attemptsSnapshot()
+	if len(attempts) == 0 {
+		return ""
+	}
+	failedModel, failedProvider, failedReason, servingModel, servingProvider := "", "", "", "", ""
+	for _, event := range attempts {
+		if event.Outcome == coreexecutor.RouteOutcomeSuccess {
+			servingModel = event.Model
+			servingProvider = event.Provider
+			break
+		}
+		if failedModel == "" && event.Model != "" {
+			failedModel = event.Model
+		}
+		if failedProvider == "" && event.Provider != "" {
+			failedProvider = event.Provider
+		}
+		if failedReason == "" {
+			failedReason = releasableRouteReason(event)
+		}
+	}
+	// A fallback marker is only emitted when a failed attempt preceded a
+	// serving success AND the serving decision moved to a different model or
+	// provider (a real routing fallback). A direct success (scenario 3) and
+	// an all-failed terminal response (scenario 2) leave it absent; so does
+	// a same-model-and-provider credential retry, where the "service path"
+	// the client sees did not change.
+	if servingModel == "" || failedReason == "" {
+		return ""
+	}
+	if failedModel == servingModel && failedProvider == servingProvider {
+		return ""
+	}
+	// The pair names what the client can see: models when they differ,
+	// otherwise — same model, different provider — the provider keys the
+	// request moved between.
+	from, to := failedModel, servingModel
+	if from == to || from == "" {
+		from = failedProvider
+		if from == "" {
+			from = to
+		}
+		to = servingProvider
+		if to == "" {
+			to = from
+		}
+	}
+	// The move must be distinguishable; identical pair => no marker.
+	if from == to {
+		return ""
+	}
+	value := fallbackHeaderSafe(from) + "->" + fallbackHeaderSafe(to) +
+		" (reason: " + fallbackHeaderSafe(failedReason) + ")"
+	value = fallbackHeaderSafe(value)
+	if len(value) > fallbackHeaderMaxLen {
+		value = value[:fallbackHeaderMaxLen]
+	}
+	return value
+}
+
+// LogFallbackEvents emits the fallback decision trail as one structured Info
+// log line, so request logs carry which providers/models failed and whether a
+// later candidate served the request or the whole chain failed. It is a
+// no-op when no attempt failed (no fallback trail to record), keeping the
+// default request log free of routing noise.
+func (c *RouteInfoCollector) LogFallbackEvents() {
+	if c == nil {
+		return
+	}
+	attempts := c.attemptsSnapshot()
+	if len(attempts) == 0 {
+		return
+	}
+	failed := make([]map[string]any, 0, len(attempts))
+	served := ""
+	for _, event := range attempts {
+		if event.Outcome == coreexecutor.RouteOutcomeSuccess {
+			served = event.Model
+			if served == "" {
+				served = event.Provider
+			}
+			break
+		}
+		failed = append(failed, map[string]any{
+			"provider": event.Provider,
+			"model":    event.Model,
+			"status":   event.Status,
+			"code":     event.Code,
+			"reason":   releasableRouteReason(event),
+		})
+	}
+	if len(failed) == 0 {
+		return
+	}
+	fields := logrus.Fields{"fallback_chain": failed}
+	if served != "" {
+		fields["served_model"] = served
+		routeInfoLog.WithFields(fields).Info("route: fallback event served")
+	} else {
+		routeInfoLog.WithFields(fields).Warn("route: fallback chain exhausted")
+	}
+}
+
+// attemptsSnapshot returns a copy of the collected events under lock.
+func (c *RouteInfoCollector) attemptsSnapshot() []coreexecutor.RouteEvent {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]coreexecutor.RouteEvent(nil), c.events...)
+}
+
+// releasableRouteReason picks the client-safe failure text for one failed
+// route event. The event's Code (a bounded machine code like "upstream_503")
+// is preferred; the sanitized human Error is used only when no code exists.
+// Both are already client-safe at the reporting site, but the value is capped
+// again here so a lengthy message cannot bloat the header.
+func releasableRouteReason(event coreexecutor.RouteEvent) string {
+	if code := strings.TrimSpace(event.Code); code != "" {
+		return code
+	}
+	message := strings.TrimSpace(event.Error)
+	if len(message) > fallbackReasonMaxLen {
+		message = message[:fallbackReasonMaxLen]
+	}
+	return message
+}
+
+// fallbackHeaderSafe strips non-printable ASCII so a client-supplied model
+// name or error text can never inject a newline or escape sequence into a
+// response header value.
+func fallbackHeaderSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 0x20 && r <= 0x7e {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // JSON marshals the route_info body, or returns "" on failure. A nil
 // collector returns "" so callers can skip the header without a guard.
 func (c *RouteInfoCollector) JSON(ctx context.Context) string {
@@ -210,17 +393,36 @@ func (h *BaseAPIHandler) newRouteInfoCollector(ctx context.Context, candidates [
 	return NewRouteInfoCollector(candidates, routerRouted)
 }
 
-// routeInfoHeaders ensures a header map suitable for the X-Route-Detail
-// response header. Streaming responses normally carry no downstream header map
-// unless passthrough is enabled, so a collector needs one allocated.
-func routeInfoHeaders(headers http.Header, collector *RouteInfoCollector) http.Header {
+// newAlwaysRouteInfoCollector returns a collector for every non-streaming
+// request so the gateway can always emit X-OpenRouter-Fallback and log the
+// fallback trail. Streaming responses keep the debug-opt-in collector because
+// their body is committed before the full routing outcome is known.
+func (h *BaseAPIHandler) newAlwaysRouteInfoCollector(candidates []string, routerRouted bool, model string) *RouteInfoCollector {
+	return NewRouteInfoCollectorWithModel(candidates, routerRouted, model)
+}
+
+// attachOpenRouterFallback sets X-OpenRouter-Fallback on a non-streaming
+// response header map. It allocates the map when needed and is a no-op when
+// the collector reports no fallback (direct success or terminal failure).
+func attachOpenRouterFallback(headers http.Header, collector *RouteInfoCollector) http.Header {
 	if collector == nil {
 		return headers
 	}
-	if headers == nil {
-		return make(http.Header)
+	value := collector.OpenRouterFallback()
+	if value == "" {
+		return headers
 	}
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set(OpenRouterFallbackHeader, value)
 	return headers
+}
+
+// logFallbackIfAny emits the structured fallback event log for the request.
+// It is a no-op when the collector is nil or the request did not fall back.
+func (c *RouteInfoCollector) logFallbackIfAny() {
+	c.LogFallbackEvents()
 }
 
 // attachRouteInfoToHeaders sets the X-Route-Detail response header on headers

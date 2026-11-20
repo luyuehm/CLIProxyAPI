@@ -31,6 +31,9 @@ var corsExposedResponseHeaders = []string{
 	// X-Route-Detail carries the ?debug=true routing audit for streaming
 	// responses; browser clients must be able to read it.
 	"X-Route-Detail",
+	// X-OpenRouter-Fallback carries the always-on fallback marker for
+	// non-streaming responses; browser clients must be able to read it.
+	"X-OpenRouter-Fallback",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
