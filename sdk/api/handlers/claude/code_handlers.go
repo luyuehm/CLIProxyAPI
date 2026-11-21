@@ -88,6 +88,15 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
 
+	// Expand tools[].mcp MCP tool definitions to native Anthropic tool shape and
+	// reject oversized or structurally unsupported payloads before dispatch.
+	if rewritten, mcpErr := util.RewriteClaudeMCPToolDefinitions(rawJSON); mcpErr != nil {
+		h.WriteMCPSchemaErrorResponse(c, mcpErr)
+		return
+	} else {
+		rawJSON = rewritten
+	}
+
 	// Check if the client requested a streaming response.
 	streamResult := ojson.GetBytesNoCopy(rawJSON, "stream")
 	if !streamResult.Exists() || streamResult.Type == ojson.False {
@@ -119,6 +128,15 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
+
+	// Expand tools[].mcp MCP tool definitions to native Anthropic tool shape and
+	// reject oversized or structurally unsupported payloads before dispatch.
+	if rewritten, mcpErr := util.RewriteClaudeMCPToolDefinitions(rawJSON); mcpErr != nil {
+		h.WriteMCPSchemaErrorResponse(c, mcpErr)
+		return
+	} else {
+		rawJSON = rewritten
+	}
 
 	c.Header("Content-Type", "application/json")
 
@@ -696,6 +714,41 @@ func claudeErrorText(err error) string {
 		return string(responseBody.ResponseBody())
 	}
 	return err.Error()
+}
+
+// WriteMCPSchemaErrorResponse writes a Claude-shaped error for a rejected MCP
+// tool definition. The status is preserved so oversized payloads surface as
+// request_too_large and unsupported schemas as invalid_request_error, and the
+// field path is included so callers can locate the offending definition.
+func (h *ClaudeCodeAPIHandler) WriteMCPSchemaErrorResponse(c *gin.Context, mcpErr *util.MCPToolSchemaError) {
+	if mcpErr == nil {
+		return
+	}
+	status := http.StatusBadRequest
+	if mcpErr.Status > 0 {
+		status = mcpErr.Status
+	}
+	errType := claudeErrorTypeFromStatus(status)
+	message := mcpErr.Message
+	if field := strings.TrimSpace(mcpErr.Field); field != "" {
+		message = fmt.Sprintf("%s (field: %s)", message, field)
+	}
+	body, err := json.Marshal(claudeErrorResponse{
+		Type: "error",
+		Error: claudeErrorDetail{
+			Type:    errType,
+			Message: message,
+		},
+	})
+	if err != nil {
+		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
+	}
+	appendClaudeAPIResponse(c, body)
+	if !c.Writer.Written() {
+		c.Writer.Header().Set("Content-Type", "application/json")
+	}
+	c.Status(status)
+	_, _ = c.Writer.Write(body)
 }
 
 func claudeErrorDetailFromText(status int, errText string) (string, string) {

@@ -181,6 +181,7 @@ Web console for CLIProxyAPI v8+, built on `shadcn/ui` with a modern UI/UX, fluid
 - Advanced (executors & translators): [docs/sdk-advanced.md](docs/sdk-advanced.md)
 - Access: [docs/sdk-access.md](docs/sdk-access.md)
 - Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
+- MCP tool definitions for `/v1/messages`: [docs/mcp-tool-definitions.md](docs/mcp-tool-definitions.md)
 - Custom Provider Example: `examples/custom-provider`
 
 ## Contributing
