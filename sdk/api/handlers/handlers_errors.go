@@ -112,6 +112,9 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	if msg != nil && msg.StatusCode > 0 {
 		status = msg.StatusCode
 	}
+	if msg != nil && msg.RouteInfoHeader != "" {
+		c.Writer.Header().Set(OpenRouterRouteHeader, msg.RouteInfoHeader)
+	}
 	if msg != nil && msg.DirectResponse {
 		writeDirectErrorResponse(c, status, msg)
 		return

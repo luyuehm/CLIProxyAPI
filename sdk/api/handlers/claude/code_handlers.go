@@ -383,6 +383,9 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 	if msg != nil && msg.StatusCode > 0 {
 		status = msg.StatusCode
 	}
+	if msg != nil && msg.RouteInfoHeader != "" {
+		c.Writer.Header().Set(handlers.OpenRouterRouteHeader, msg.RouteInfoHeader)
+	}
 	if msg != nil && msg.DirectResponse {
 		for key, values := range handlers.FilterUpstreamHeaders(msg.Headers) {
 			if len(values) == 0 || handlers.IsCPAReservedResponseHeader(key) {

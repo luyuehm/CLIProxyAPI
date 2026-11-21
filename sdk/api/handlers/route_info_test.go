@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/url"
 	"testing"
 
@@ -107,6 +109,101 @@ func TestRouteInfoCollectorInjectIntoJSONLeavesInvalidBody(t *testing.T) {
 	injected := collector.InjectIntoJSON(nil, body)
 	if string(injected) != string(body) {
 		t.Fatalf("invalid body should be returned unchanged, got %q", injected)
+	}
+}
+
+func TestRouteInfoCollectorOpenRouterRouteNoFallback(t *testing.T) {
+	collector := NewRouteInfoCollectorWithModel([]string{"provider-a"}, false, "gpt-test")
+	collector.ReportEvent(coreexecutor.RouteEvent{
+		Provider: "provider-a",
+		Model:    "gpt-test",
+		Outcome:  coreexecutor.RouteOutcomeSuccess,
+	})
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(collector.OpenRouterRoute(nil)), &body); err != nil {
+		t.Fatalf("decode route header: %v", err)
+	}
+	if body["provider"] != "provider-a" {
+		t.Fatalf("provider = %v, want provider-a", body["provider"])
+	}
+	if body["model"] != "gpt-test" {
+		t.Fatalf("model = %v, want gpt-test", body["model"])
+	}
+	chain, _ := body["fallback_chain"].([]any)
+	if len(chain) != 0 {
+		t.Fatalf("fallback_chain = %v, want empty", body["fallback_chain"])
+	}
+}
+
+func TestRouteInfoCollectorOpenRouterRouteFallback(t *testing.T) {
+	collector := NewRouteInfoCollectorWithModel([]string{"provider-a", "provider-b"}, false, "gpt-test")
+	collector.ReportEvent(coreexecutor.RouteEvent{
+		Provider: "provider-a",
+		Model:    "gpt-test",
+		Outcome:  coreexecutor.RouteOutcomeFailed,
+		Status:   http.StatusServiceUnavailable,
+		Code:     "upstream_503",
+	})
+	collector.ReportEvent(coreexecutor.RouteEvent{
+		Provider: "provider-b",
+		Model:    "gpt-test",
+		Outcome:  coreexecutor.RouteOutcomeSuccess,
+	})
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(collector.OpenRouterRoute(nil)), &body); err != nil {
+		t.Fatalf("decode route header: %v", err)
+	}
+	if body["provider"] != "provider-b" {
+		t.Fatalf("provider = %v, want provider-b", body["provider"])
+	}
+	chain, _ := body["fallback_chain"].([]any)
+	if len(chain) != 2 || chain[0] != "provider-a" || chain[1] != "provider-b" {
+		t.Fatalf("fallback_chain = %v, want [provider-a provider-b]", chain)
+	}
+	if code, _ := body["failure_code"].(string); code != "" {
+		t.Fatalf("failure_code = %q, want empty on a successful fallback", code)
+	}
+	if reason, _ := body["failure_reason"].(string); reason != "" {
+		t.Fatalf("failure_reason = %q, want empty on a successful fallback", reason)
+	}
+}
+
+func TestRouteInfoCollectorOpenRouterRouteError(t *testing.T) {
+	collector := NewRouteInfoCollectorWithModel([]string{"provider-a", "provider-b"}, false, "gpt-test")
+	collector.ReportEvent(coreexecutor.RouteEvent{
+		Provider: "provider-a",
+		Model:    "gpt-test",
+		Outcome:  coreexecutor.RouteOutcomeFailed,
+		Status:   http.StatusServiceUnavailable,
+		Code:     "upstream_503",
+	})
+	collector.ReportEvent(coreexecutor.RouteEvent{
+		Provider: "provider-b",
+		Model:    "gpt-test",
+		Outcome:  coreexecutor.RouteOutcomeFailed,
+		Status:   http.StatusServiceUnavailable,
+		Code:     "upstream_503",
+		Error:    "upstream overloaded",
+	})
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(collector.OpenRouterRoute(nil)), &body); err != nil {
+		t.Fatalf("decode route header: %v", err)
+	}
+	if body["provider"] != "provider-b" {
+		t.Fatalf("provider = %v, want last attempted provider-b", body["provider"])
+	}
+	if body["failure_code"] != "upstream_503" {
+		t.Fatalf("failure_code = %v, want upstream_503", body["failure_code"])
+	}
+	if body["failure_reason"] != "upstream overloaded" {
+		t.Fatalf("failure_reason = %v, want upstream overloaded", body["failure_reason"])
+	}
+	chain, _ := body["fallback_chain"].([]any)
+	if len(chain) != 2 {
+		t.Fatalf("fallback_chain = %v, want [provider-a provider-b]", chain)
 	}
 }
 

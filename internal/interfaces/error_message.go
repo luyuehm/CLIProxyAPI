@@ -26,4 +26,8 @@ type ErrorMessage struct {
 
 	// Headers contains downstream response headers when DirectResponse is true.
 	Headers http.Header
+
+	// RouteInfoHeader is the pre-rendered X-OpenRouter-Route value for an
+	// error response. It is emitted unconditionally by WriteErrorResponse.
+	RouteInfoHeader string
 }

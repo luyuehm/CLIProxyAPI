@@ -245,3 +245,76 @@ func TestRouteInfoStreamHeaderAbsentWithoutDebug(t *testing.T) {
 		t.Fatalf("%s must be absent without ?debug=true, got %q", handlers.RouteDetailResponseHeader, got)
 	}
 }
+
+func decodeOpenRouterRoute(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	raw := recorder.Header().Get(handlers.OpenRouterRouteHeader)
+	if raw == "" {
+		t.Fatalf("missing %s response header", handlers.OpenRouterRouteHeader)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode %s: %v (value=%q)", handlers.OpenRouterRouteHeader, err, raw)
+	}
+	return payload
+}
+
+// Scenario 3: the non-streaming route header exists without ?debug=true.
+func TestRouteInfoOpenRouterHeaderWithoutDebug(t *testing.T) {
+	h, _ := buildRouteInfoHandler(t, []string{"auth-a"}, nil)
+	recorder := postChatCompletions(h, "", `{"model":"`+routeInfoTestModel+`","messages":[{"role":"user","content":"hi"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	info := decodeOpenRouterRoute(t, recorder)
+	if info["provider"] != "route-info-provider" {
+		t.Fatalf("provider = %v, want route-info-provider", info["provider"])
+	}
+	if info["model"] != routeInfoTestModel {
+		t.Fatalf("model = %v, want %s", info["model"], routeInfoTestModel)
+	}
+	chain, _ := info["fallback_chain"].([]any)
+	if len(chain) != 0 {
+		t.Fatalf("fallback_chain = %v, want empty", info["fallback_chain"])
+	}
+}
+
+// Scenario 2: a failed first attempt is reported in the fallback chain.
+func TestRouteInfoOpenRouterHeaderFallbackChain(t *testing.T) {
+	h, _ := buildRouteInfoHandler(t, []string{"auth-1-primary", "auth-2-backup"}, map[string]struct{}{"auth-1-primary": {}})
+	recorder := postChatCompletions(h, "", `{"model":"`+routeInfoTestModel+`","messages":[{"role":"user","content":"hi"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	info := decodeOpenRouterRoute(t, recorder)
+	if info["provider"] != "route-info-provider" {
+		t.Fatalf("provider = %v, want route-info-provider", info["provider"])
+	}
+	chain, _ := info["fallback_chain"].([]any)
+	if len(chain) == 0 {
+		t.Fatalf("fallback_chain = %v, want the failed provider", info["fallback_chain"])
+	}
+	// The request succeeded after the fallback, so no failure fields leak in.
+	if code, _ := info["failure_code"].(string); code != "" {
+		t.Fatalf("failure_code = %q, want empty on a successful fallback", code)
+	}
+	if reason, _ := info["failure_reason"].(string); reason != "" {
+		t.Fatalf("failure_reason = %q, want empty on a successful fallback", reason)
+	}
+}
+
+// Scenario 4: the route header is present on non-streaming error responses.
+func TestRouteInfoOpenRouterHeaderOnError(t *testing.T) {
+	h, _ := buildRouteInfoHandler(t, []string{"auth-1"}, map[string]struct{}{"auth-1": {}})
+	recorder := postChatCompletions(h, "", `{"model":"`+routeInfoTestModel+`","messages":[{"role":"user","content":"hi"}]}`)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", recorder.Code)
+	}
+	info := decodeOpenRouterRoute(t, recorder)
+	if info["provider"] != "route-info-provider" {
+		t.Fatalf("provider = %v, want route-info-provider", info["provider"])
+	}
+	if info["failure_code"] != "upstream_503" {
+		t.Fatalf("failure_code = %v, want upstream_503", info["failure_code"])
+	}
+}
