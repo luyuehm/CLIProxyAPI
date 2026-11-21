@@ -413,6 +413,8 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		ProxyURL:                     execOptions.ProxyURL,
 	}
 	opts.Metadata = reqMeta
+	routeInfoCollector := h.newRouteInfoCollector(ctx, providers, routeDecision.Provider != "")
+	ctx = withRouteObservability(ctx, routeInfoCollector)
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
@@ -671,8 +673,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
+	upstreamHeaders = routeInfoHeaders(upstreamHeaders, routeInfoCollector)
 	if upstreamHeaders == nil && (passthroughHeadersEnabled || streamInterceptorsActive) {
 		upstreamHeaders = make(http.Header)
+	}
+	if routeInfoCollector != nil {
+		attachRouteInfoToHeaders(upstreamHeaders, routeInfoCollector, ctx)
 	}
 	dataChan := make(chan []byte)
 	errChan := make(chan *interfaces.ErrorMessage, 1)

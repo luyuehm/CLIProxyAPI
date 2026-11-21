@@ -1202,6 +1202,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errPrepare, m.requestScopedErrorConfig(execCtx))
 			applyRequestScopedActionToResult(action, okAction, &result)
+			reportRouteEvent(execCtx, provider, auth, stateModel, cliproxyexecutor.RouteOutcomePreparationError, result.Error)
 			m.MarkResult(execCtx, result)
 			errPrepare = annotateTrustedRetryAfterByHint(errPrepare)
 			syncPreferredUpstreamError(&upstreamErr, errPrepare)
@@ -1314,6 +1315,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
 				applyRequestScopedActionToResult(action, okAction, &result)
+				reportRouteEvent(execCtx, provider, auth, resultModel, cliproxyexecutor.RouteOutcomeFailed, result.Error)
 				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
 					m.recordAvailabilityNeutralResult(execCtx, result)
 				} else {
@@ -1341,6 +1343,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			reportRouteEvent(execCtx, provider, auth, resultModel, cliproxyexecutor.RouteOutcomeSuccess, nil)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
@@ -1465,6 +1468,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errPrepare, m.requestScopedErrorConfig(execCtx))
 			applyRequestScopedActionToResult(action, okAction, &result)
+			reportRouteEvent(execCtx, provider, auth, stateModel, cliproxyexecutor.RouteOutcomePreparationError, result.Error)
 			m.MarkResult(execCtx, result)
 			errPrepare = annotateTrustedRetryAfterByHint(errPrepare)
 			syncPreferredUpstreamError(&upstreamErr, errPrepare)
@@ -1574,6 +1578,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
 				applyRequestScopedActionToResult(action, okAction, &result)
+				reportRouteEvent(execCtx, provider, auth, resultModel, cliproxyexecutor.RouteOutcomeFailed, result.Error)
 				// Some Anthropic-compatible upstreams and plugin executors do not
 				// implement count_tokens and return a generic endpoint 404 or an
 				// explicit 501 / unsupported-capability error. Record the failure
@@ -1609,6 +1614,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				continue
 			}
 			m.MarkResult(execCtx, result)
+			reportRouteEvent(execCtx, provider, auth, resultModel, cliproxyexecutor.RouteOutcomeSuccess, nil)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
 			return resp, nil
@@ -1907,6 +1913,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errPrepare, m.requestScopedErrorConfig(execCtx))
 			applyRequestScopedActionToResult(action, okAction, &result)
+			reportRouteEvent(execCtx, provider, auth, stateModel, cliproxyexecutor.RouteOutcomePreparationError, result.Error)
 			if selection != nil {
 				m.reportHomeResult(execCtx, result, auth)
 				releaseAttempt()
@@ -1992,6 +1999,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
 		if errStream != nil {
+			reportRouteEvent(execCtx, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeFailed, resultErrorFromError(errStream))
 			if isCredentialTerminatedError(errStream) {
 				recordRequestRefusedAuth(ctx, auth.ID)
 				if selection != nil {
@@ -2065,6 +2073,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			continue
 		}
+		reportRouteEvent(execCtx, provider, auth, routeModel, cliproxyexecutor.RouteOutcomeSuccess, nil)
 		if selection != nil {
 			if m.retainHomeWebsocketSelection(ctx, opts, routeModel, selection) {
 				return wrapHomeStream(ctx, streamResult, nil, releaseAttempt), nil
