@@ -105,10 +105,13 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		ProxyURL:                    execOptions.ProxyURL,
 	}
 	opts.Metadata = reqMeta
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
+	ctx = withRouteObservability(ctx, routeInfoCollector)
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
@@ -117,6 +120,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
+		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -126,6 +130,10 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
 	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindExecution, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
+	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
+		body = routeInfoCollector.InjectIntoJSON(ctx, body)
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -176,10 +184,13 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		ProxyURL:                    execOptions.ProxyURL,
 	}
 	opts.Metadata = reqMeta
+	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
+	ctx = withRouteObservability(ctx, routeInfoCollector)
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, handlerType, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
 	if interceptErr != nil {
+		setOpenRouterRouteError(interceptErr, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, interceptErr)
 		return nil, nil, interceptErr
 	}
@@ -188,6 +199,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errMsg := executionErrorMessage(err)
+		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
 		lifecycle.completeError(ctx, errMsg)
 		return nil, nil, errMsg
 	}
@@ -197,6 +209,10 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	passthroughHeaders := executionPassthroughHeaders(h.CurrentConfig(), execOptions.InternalSource)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
 	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindCountTokens, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
+	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
+	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
+		body = routeInfoCollector.InjectIntoJSON(ctx, body)
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

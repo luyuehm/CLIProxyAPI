@@ -128,9 +128,28 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 			c.Writer.Header().Add("Retry-After", value)
 		}
 	}
+	if msg != nil && msg.Addon != nil {
+		// X-OpenRouter-Route is always-on route observability, independent of
+		// passthrough configuration. It must reach the client on error responses
+		// too. Compare with canonical keys because callers may set the header
+		// under either spelling.
+		routeKey := http.CanonicalHeaderKey(OpenRouterRouteHeader)
+		for key, values := range msg.Addon {
+			if http.CanonicalHeaderKey(key) != routeKey || len(values) == 0 {
+				continue
+			}
+			c.Writer.Header().Del(routeKey)
+			for _, value := range values {
+				c.Writer.Header().Add(routeKey, value)
+			}
+		}
+	}
 	if msg != nil && msg.Addon != nil && PassthroughHeadersEnabled(h.CurrentConfig()) {
 		for key, values := range msg.Addon {
 			if len(values) == 0 || IsCPAReservedResponseHeader(key) {
+				continue
+			}
+			if http.CanonicalHeaderKey(key) == OpenRouterRouteHeader {
 				continue
 			}
 			// A locally trusted cooldown deadline outranks the raw upstream
