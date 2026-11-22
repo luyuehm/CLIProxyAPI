@@ -1190,6 +1190,14 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		apiKey = a.Attributes["api_key"]
 		baseURL = a.Attributes["base_url"]
 	}
+	if baseURL == "" {
+		// Metadata is the channel the managed credential stores (gitstore,
+		// objectstore, postgresstore) populate for custom base URLs; the
+		// antigravity executor resolves it the same way, so keep the two
+		// executors consistent rather than silently dropping a configured
+		// endpoint. Attributes (arbitrage runtime_only path) still wins.
+		baseURL = claudeauth.ReadMetadataString(&a.Metadata, "base_url")
+	}
 	if apiKey == "" {
 		apiKey = claudeauth.ReadMetadataString(&a.Metadata, "access_token")
 	}
