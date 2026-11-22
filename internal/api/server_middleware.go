@@ -33,6 +33,9 @@ var corsExposedResponseHeaders = []string{
 	"X-Route-Detail",
 	// X-OpenRouter-Route carries the always-on non-streaming routing header.
 	"X-OpenRouter-Route",
+	// X-OpenRouter-Fallback carries the always-on fallback marker for
+	// non-streaming responses; browser clients must be able to read it.
+	"X-OpenRouter-Fallback",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
