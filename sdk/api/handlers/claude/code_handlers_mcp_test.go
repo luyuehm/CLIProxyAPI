@@ -66,6 +66,49 @@ func TestClaudeMessages_RejectsOversizedTools(t *testing.T) {
 	}
 }
 
+func TestClaudeMessages_MissingMCPCapabilityReturnsStructuredCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"model":"claude-sonnet-4-6","stream":false,"parallel_tool_calls":true,"tools":[{"type":"mcp","mcp":{"server_url":"https://example.com/mcp","name":"calc","inputSchema":{"type":"object"}}}]}`
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+
+	handler := &ClaudeCodeAPIHandler{}
+	handler.ClaudeMessages(c)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusUnprocessableEntity, recorder.Body.String())
+	}
+	respBody := recorder.Body.Bytes()
+	if got := gjson.GetBytes(respBody, "error.code").String(); got != util.MCPCapabilityErrorNotDeclared {
+		t.Fatalf("error.code = %q, want %q; body=%s", got, util.MCPCapabilityErrorNotDeclared, respBody)
+	}
+	if msg := gjson.GetBytes(respBody, "error.message").String(); !strings.Contains(msg, "degrade to serial") {
+		t.Fatalf("error.message = %q, want serial degradation hint; body=%s", msg, respBody)
+	}
+}
+
+func TestClaudeMessages_InvalidMCPCapabilityReturnsStructuredCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"model":"claude-sonnet-4-6","stream":false,"tools":[{"type":"mcp","mcp":{"server_url":"https://example.com/mcp","name":"calc","inputSchema":{"type":"object"},"capabilities":{"parallel_tool_use":"yes"}}}]}`
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+
+	handler := &ClaudeCodeAPIHandler{}
+	handler.ClaudeMessages(c)
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusUnprocessableEntity, recorder.Body.String())
+	}
+	respBody := recorder.Body.Bytes()
+	if got := gjson.GetBytes(respBody, "error.code").String(); got != util.MCPCapabilityErrorManifestInvalid {
+		t.Fatalf("error.code = %q, want %q; body=%s", got, util.MCPCapabilityErrorManifestInvalid, respBody)
+	}
+}
+
 func TestWriteMCPSchemaErrorResponse_PreservesStatusAndField(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

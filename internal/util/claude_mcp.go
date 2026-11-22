@@ -24,25 +24,30 @@ const maxClaudeToolDescriptionLen = 1024
 // MCPToolSchemaError records a rejected MCP tool definition: the HTTP status
 // to return, the concrete field that failed, and a human-readable message.
 type MCPToolSchemaError struct {
-	Status  int
-	Field   string
-	Message string
+	Status     int
+	Field      string
+	Message    string
+	Code       string
+	Capability string
+	Fallback   string
 }
 
 // Error implements the error interface.
 func (e *MCPToolSchemaError) Error() string { return e.Message }
 
-// RewriteClaudeMCPToolDefinitions converts tools[] entries that carry an MCP
-// tool definition (type "mcp" with a nested mcp object holding name /
-// description / inputSchema) into native Anthropic tool shape
-// {"name","description","input_schema"}. Entries without an MCP definition are
-// left untouched and the original body is returned unchanged when no MCP entry
-// exists.
+// RewriteClaudeMCPToolDefinitions validates the optional MCP capability
+// manifest for every tools[].mcp entry, then converts those entries into
+// native Anthropic tool shape {"name","description","input_schema"}. Entries
+// without an MCP definition are left untouched and the original body is
+// returned unchanged when no MCP entry exists.
 //
 // Two rejection classes are reported as *MCPToolSchemaError:
 //   - the serialized tools payload exceeds MaxClaudeMCPToolsBytes (413);
 //   - an MCP input schema is structurally invalid or uses an unsupported
 //     union type at the root (400/422) with the precise field path.
+//   - an MCP capability manifest is missing a requested optional capability or
+//     has an invalid field type (422) with the code MCP_CAPABILITY_NOT_DECLARED
+//     or MCP_CAPABILITY_MANIFEST_INVALID.
 //
 // Native Claude -> Anthropic requests pass the body verbatim to upstream, so
 // this rewrite must run before dispatch or the unknown mcp field would be
@@ -62,12 +67,42 @@ func RewriteClaudeMCPToolDefinitions(body []byte) ([]byte, *MCPToolSchemaError) 
 
 	converted := body
 	convertedAny := false
+	desired := parseClaudeMCPRequestCapabilities(converted)
+	requestedCapabilities := desired.ParallelToolUse || desired.StrictToolUse
+	degraded := false
+	var degradedCapabilities []string
+	checkedTools := 0
 	index := 0
 	for _, tool := range tools.Array() {
 		path := fmt.Sprintf("tools.%d", index)
 		if !isClaudeMCPToolEntry(tool) {
 			index++
 			continue
+		}
+		if capErr := validateClaudeMCPCapabilityManifest(converted, tool, index); capErr != nil {
+			if desired.AutoDegrade && capErr.Code == MCPCapabilityErrorNotDeclared {
+				// A single manifest can be missing several capabilities. Keep
+				// degrading and re-validating until the request is compatible or
+				// an invalid manifest must still fail closed.
+				degradeAttempts := 0
+				for capErr != nil && desired.AutoDegrade &&
+					capErr.Code == MCPCapabilityErrorNotDeclared && degradeAttempts < 2 {
+					converted = degradeClaudeMCPRequest(converted, capErr.Capability)
+					desired = parseClaudeMCPRequestCapabilities(converted)
+					degraded = true
+					degradedCapabilities = appendUniqueString(degradedCapabilities, capErr.Capability)
+					degradeAttempts++
+					capErr = validateClaudeMCPCapabilityManifest(converted, tool, index)
+				}
+				if capErr != nil {
+					return nil, capErr
+				}
+				checkedTools++
+			} else {
+				return nil, capErr
+			}
+		} else {
+			checkedTools++
 		}
 		native, errMCP := buildClaudeToolFromMCP(tool, index)
 		if errMCP != nil {
@@ -87,6 +122,13 @@ func RewriteClaudeMCPToolDefinitions(body []byte) ([]byte, *MCPToolSchemaError) 
 	}
 	if !convertedAny {
 		return body, nil
+	}
+	if checkedTools > 0 && (requestedCapabilities || degraded) {
+		degradedCount := 0
+		if degraded {
+			degradedCount = len(degradedCapabilities)
+		}
+		logMCPCapabilityCheck(checkedTools, degradedCount, degradedCapabilities)
 	}
 	return converted, nil
 }

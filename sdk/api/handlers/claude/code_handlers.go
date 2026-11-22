@@ -347,6 +347,7 @@ func (h *ClaudeCodeAPIHandler) forwardClaudeStream(c *gin.Context, flusher http.
 type claudeErrorDetail struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
 }
 
 type claudeErrorResponse struct {
@@ -456,6 +457,7 @@ func (h *ClaudeCodeAPIHandler) WriteMCPSchemaErrorResponse(c *gin.Context, mcpEr
 		Error: claudeErrorDetail{
 			Type:    errType,
 			Message: message,
+			Code:    mcpErr.Code,
 		},
 	})
 	if err != nil {
