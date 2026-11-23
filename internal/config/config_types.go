@@ -818,6 +818,56 @@ func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat 
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
 
+// FallbackConfig configures the automatic provider fallback engine
+// (RIC-3143, OPENROUT-001). It maps directly onto internal/fallback.Config,
+// the declarative operator-facing shape: the first provider in Providers is
+// the preferred one, and each subsequent entry is the next candidate tried in
+// order when the earlier one fails.
+//
+// An empty block (the default) disables the engine: the gateway keeps its
+// existing credential-level failover and no provider-level fallback happens.
+type FallbackConfig struct {
+	// Enabled toggles the provider fallback engine. false disables it even
+	// when Providers is non-empty.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Providers is the ordered candidate chain; Providers[0] is the
+	// preferred provider. Provider-level fallback only ever moves along this
+	// chain, never outside it.
+	Providers []FallbackProviderConfig `yaml:"providers,omitempty" json:"providers,omitempty"`
+
+	// CostLimitUSD is the hard per-request cost ceiling. 0 disables it.
+	CostLimitUSD float64 `yaml:"cost-limit-usd,omitempty" json:"cost_limit_usd,omitempty"`
+	// QualityFloor is the minimum quality index a candidate's known
+	// estimate must reach. 0 disables it.
+	QualityFloor float64 `yaml:"quality-floor,omitempty" json:"quality_floor,omitempty"`
+	// TimeoutBudget caps total wall time across all attempts. Empty or "0"
+	// disables it (the caller context deadline is then the only budget).
+	// Accepts Go duration strings ("30s", "1m").
+	TimeoutBudget string `yaml:"timeout-budget,omitempty" json:"timeout_budget,omitempty"`
+
+	// BackoffWindow is how far back the health tracker counts failures.
+	// Defaults to 5m when empty.
+	BackoffWindow string `yaml:"backoff-window,omitempty" json:"backoff_window,omitempty"`
+	// BackoffBase is the first backoff cooldown. Defaults to 5s.
+	BackoffBase string `yaml:"backoff-base,omitempty" json:"backoff_base,omitempty"`
+	// BackoffMax caps the backoff cooldown. Defaults to 5m.
+	BackoffMax string `yaml:"backoff-max,omitempty" json:"backoff_max,omitempty"`
+}
+
+// FallbackProviderConfig is one candidate slot in the fallback chain.
+type FallbackProviderConfig struct {
+	// Provider is the provider key the gateway can execute.
+	Provider string `yaml:"provider" json:"provider"`
+	// Model is an optional per-candidate model override. Empty keeps the
+	// requested model.
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+	// Quality is an optional known quality estimate.
+	Quality float64 `yaml:"quality,omitempty" json:"quality,omitempty"`
+	// CostUSD is an optional known per-request cost estimate.
+	CostUSD float64 `yaml:"cost-usd,omitempty" json:"cost_usd,omitempty"`
+}
+
 // ShadowConfig configures the enterprise shadow traffic mirroring engine.
 type ShadowConfig struct {
 	// Enabled toggles the whole shadow engine.

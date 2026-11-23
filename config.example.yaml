@@ -237,6 +237,30 @@ routing:
   # Ignored when routing.session-affinity is false.
   session-affinity-subagents: true
 
+# Automatic provider fallback engine (RIC-3143, OPENROUT-001).
+# When enabled, a request whose preferred provider fails is transparently
+# retried on the next provider in the chain, and the degraded response carries
+# X-Fallback-Reason (the bounded reason code). When every provider fails the
+# request returns 503 with attempted_models naming the chain that was tried.
+# An empty or disabled block leaves the gateway's existing credential-level
+# failover as the only behavior.
+fallback:
+  enabled: false # default: false (disabled)
+  # providers is the ordered candidate chain; the first entry is the preferred
+  # provider. Each subsequent entry is tried in order when the earlier one fails.
+  # Provider-level fallback only ever moves along this chain.
+  providers:
+    - provider: openai
+    - provider: anthropic
+      model: "" # optional per-candidate model override; empty keeps the requested model
+    - provider: gemini
+  cost-limit-usd: 0.01 # optional hard per-request cost ceiling; 0 disables
+  quality-floor: 1.0 # optional minimum quality index a candidate's known estimate must reach; 0 disables
+  timeout-budget: 30s # optional total wall-time budget across attempts; empty or "0" disables
+  backoff-window: 5m # health failure window; default 5m
+  backoff-base: 5s # first backoff cooldown; default 5s
+  backoff-max: 5m # cooldown cap; default 5m
+
 # Codex provider behavior.
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,

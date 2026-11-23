@@ -36,6 +36,9 @@ var corsExposedResponseHeaders = []string{
 	// X-OpenRouter-Fallback carries the always-on fallback marker for
 	// non-streaming responses; browser clients must be able to read it.
 	"X-OpenRouter-Fallback",
+	// X-Fallback-Reason carries the automatic provider fallback's bounded
+	// reason code (RIC-3143); browser clients must be able to read it.
+	"X-Fallback-Reason",
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")

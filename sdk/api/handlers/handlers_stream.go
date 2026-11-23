@@ -385,7 +385,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		return nil, nil, errChan
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	streamResult, fallbackState, err := h.executeStreamWithFallback(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		// RIC-2532-A: surface the contract's 503 route_boundary_violation
@@ -395,6 +395,16 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			lifecycle.completeError(ctx, boundaryErr)
 			errChan := make(chan *interfaces.ErrorMessage, 1)
 			errChan <- boundaryErr
+			close(errChan)
+			return nil, nil, errChan
+		}
+		// RIC-3143: a provider-level fallback that exhausted its chain is a
+		// 503 carrying attempted_models.
+		if fallbackErr := fallbackState.buildErrorMessage(); fallbackErr != nil {
+			routeInfoCollector.logFallbackIfAny()
+			lifecycle.completeError(ctx, fallbackErr)
+			errChan := make(chan *interfaces.ErrorMessage, 1)
+			errChan <- fallbackErr
 			close(errChan)
 			return nil, nil, errChan
 		}
@@ -634,8 +644,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
 	// Allocate a downstream header map only when a header value must actually
-	// be emitted (debug route audit or a fallback marker), so a default
-	// streaming response with neither keeps nil headers.
+	// be emitted (debug route audit, a fallback marker, or the RIC-3143
+	// fallback reason), so a default streaming response with none keeps nil
+	// headers.
 	if routeInfoCollector != nil {
 		if routeInfoDebugEnabled(ctx) {
 			if upstreamHeaders == nil {
@@ -651,6 +662,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		}
 		routeInfoCollector.logFallbackIfAny()
 	}
+	upstreamHeaders = fallbackState.attachToHeaders(upstreamHeaders)
 	dataChan := make(chan []byte)
 	errChan := make(chan *interfaces.ErrorMessage, 1)
 

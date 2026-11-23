@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auditchain"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallbackruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/policies"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/routeboundary"
@@ -387,6 +388,15 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	if rbExecOpt := service.routeBoundaryRuntime.ExecutionServerOption(); rbExecOpt != nil {
 		service.serverOptions = append(service.serverOptions, rbExecOpt)
+	}
+	// RIC-3143: automatic provider fallback engine (internal/fallback). When a
+	// provider fails the request is retried on the next provider in the
+	// configured chain, carrying X-Fallback-Reason (the bounded engine reason
+	// code) and, on a terminal 503, attempted_models. Disabled or an empty
+	// fallback block installs nothing, so the default build keeps the existing
+	// credential-level failover.
+	if fbOpt := fallbackruntime.ServerOption(b.cfg); fbOpt != nil {
+		service.serverOptions = append(service.serverOptions, fbOpt)
 	}
 	return service, nil
 }

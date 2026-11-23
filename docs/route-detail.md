@@ -171,3 +171,105 @@ are not included.
   fallback logging on the streaming paths.
 - `internal/api/server_middleware.go` — CORS exposure of `X-Route-Detail`,
   `X-OpenRouter-Route`, and `X-OpenRouter-Fallback`.
+
+## Automatic provider fallback (`X-Fallback-Reason` + `attempted_models`)
+
+When the gateway's automatic provider fallback engine (RIC-3143, OPENROUT-001)
+is enabled via the `fallback` config block, a request whose preferred provider
+fails is transparently retried on the next provider in the configured chain.
+The degraded response carries a bounded, machine-readable reason header that is
+complementary to `X-OpenRouter-Fallback`:
+
+```
+X-Fallback-Reason: provider_openai_503
+```
+
+| Header | Meaning |
+|---|---|
+| `X-Fallback-Reason` | The engine's bounded reason code for the switch that served the request, e.g. `provider_openai_503`, `provider_openai_cooled_down`, `timeout_budget_exhausted`, `provider_openai_error`. Present only on a success that was served by a provider other than the preferred one. |
+| `X-OpenRouter-Fallback` | The model pair that moved (`failedModel->servingModel`) plus a sanitized reason, from the credential-level routing trail. |
+
+The two headers are complementary, never merged: `X-Fallback-Reason` names
+**why** the request degraded (the engine reason), `X-OpenRouter-Fallback` names
+**what** moved (the model pair). A direct success on the preferred provider
+carries **neither** header, so a monitor can alert on the presence of
+`X-Fallback-Reason` without parsing its value.
+
+### Terminal failure (`attempted_models`)
+
+When every provider in the chain fails (or the chain is exhausted), the request
+returns `503` and the error body carries the providers actually attempted, in
+attempt order, deduplicated:
+
+```json
+{
+  "error": {
+    "message": "all providers unavailable after automatic fallback (reason: provider_c_503)",
+    "type": "server_error",
+    "code": "provider_unavailable",
+    "attempted_models": ["openai", "anthropic", "gemini"]
+  }
+}
+```
+
+`attempted_models` is the AC3 contract: it names the chain the request walked so
+a client or monitor knows which providers were tried before the failure. It is
+absent on a request that failed without falling back (a single-provider chain
+keeps its native status and error body).
+
+### Health signal and recovery
+
+The engine's health signal is the `HealthWindow` (5-minute sliding window,
+exponential backoff cooldown, success clears the state). A provider is skipped
+while cooling; when it recovers (a success clears the cooldown, or the cooldown
+expires) the next request is routed to it directly and `X-Fallback-Reason`
+disappears. The gateway does **not** gate on an error-rate threshold: any
+provider-level failure (5xx, timeout) during a request triggers the switch —
+this is more aggressive than the "50% error rate" wording in the parent issue
+and is the intended behavior.
+
+### Concurrency
+
+100 concurrent requests hitting the same failing provider produce at most 2
+distinct switch decisions — the health window's cooldown/saturation reset bounds
+the target set, so the engine does not flap under concurrent load. The engine is
+safe under the `-race` detector.
+
+### Configuration
+
+The engine is enabled with a `fallback` block in the config:
+
+```yaml
+fallback:
+  enabled: true
+  providers:
+    - provider: openai
+    - provider: anthropic
+      model: claude-3-5-sonnet   # optional per-candidate model override
+    - provider: gemini
+  cost-limit-usd: 0.01          # optional hard per-request cost ceiling
+  quality-floor: 1.0            # optional minimum quality index
+  timeout-budget: 30s           # optional total wall-time budget across attempts
+  backoff-window: 5m            # health window (default 5m)
+  backoff-base: 5s              # first backoff cooldown (default 5s)
+  backoff-max: 5m               # cooldown cap (default 5m)
+```
+
+The first provider is the preferred one. An empty or disabled block leaves the
+gateway's existing credential-level failover as the only behavior. The chain is
+intersected with any KEEPER route boundary so fallback never leaves a key's
+allowed provider set.
+
+## Implementation pointers (RIC-3143)
+
+- `internal/fallback/` — the pure engine (`Orchestrator`, `HealthWindow`,
+  `Policy`/`Config`), unchanged.
+- `sdk/api/handlers/fallback_bridge.go` — the adapter that runs one request
+  through the engine, renders `X-Fallback-Reason` and `attempted_models`, and
+  threads the per-request outcome to the headers/error body.
+- `sdk/api/handlers/handlers_execution.go` — engine wiring on the non-streaming
+  paths.
+- `sdk/api/handlers/handlers_stream.go` — engine wiring on the streaming paths.
+- `internal/fallbackruntime/setup.go` — production installation from the
+  config block via the pre-reserved `WithRouterConfigurator` hook.
+- `internal/config/config_types.go` — the `FallbackConfig` declarative block.

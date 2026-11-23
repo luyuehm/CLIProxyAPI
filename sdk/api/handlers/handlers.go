@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallback"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -351,6 +352,11 @@ type BaseAPIHandler struct {
 	// caller's delivered KEEPER route boundary. Nil leaves execution routing
 	// exactly as before (the default build).
 	RouteBoundaryGate RouteBoundaryGate
+
+	// FallbackBridge optionally executes requests through the automatic
+	// provider fallback engine (RIC-3143). Nil leaves the gateway's existing
+	// credential-level failover as the only behavior.
+	FallbackBridge *fallbackBridge
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.
@@ -412,6 +418,35 @@ func (h *BaseAPIHandler) SetRouteBoundaryGate(gate RouteBoundaryGate) {
 		return
 	}
 	h.RouteBoundaryGate = gate
+}
+
+// SetFallbackBridge configures the optional automatic provider fallback
+// engine adapter (RIC-3143). A nil bridge disables provider-level fallback
+// and restores the default credential-level failover.
+func (h *BaseAPIHandler) SetFallbackBridge(bridge *fallbackBridge) {
+	if h == nil {
+		return
+	}
+	h.FallbackBridge = bridge
+}
+
+// SetFallbackEngine configures the automatic provider fallback engine (RIC-3143,
+// OPENROUT-001) from the declarative config block. It builds the engine
+// orchestrator and health window from cfg and installs the bridge, or
+// disables the bridge (nil) when fallback is disabled or the provider chain is
+// empty. It reports whether the engine was installed. An engine config parse
+// error (a malformed timeout budget) is reported through err and leaves the
+// bridge disabled rather than silently dropping the constraint.
+func (h *BaseAPIHandler) SetFallbackEngine(cfg fallback.Config, enabled bool) (installed bool, err error) {
+	if h == nil {
+		return false, nil
+	}
+	bridge, bridgeErr := newFallbackBridge(cfg, enabled)
+	if bridgeErr != nil {
+		return false, bridgeErr
+	}
+	h.FallbackBridge = bridge
+	return bridge != nil, nil
 }
 
 func isNilPluginInterceptorHost(host PluginInterceptorHost) bool {
