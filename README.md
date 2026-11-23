@@ -162,6 +162,7 @@ Full CLIProxyAPI management center with request-level monitoring and cost estima
 - Route detail (`?debug=true` audit and `X-OpenRouter-Route` header): [docs/route-detail.md](docs/route-detail.md)
 - Audit chain of responsibility (high-risk action evidence log): [docs/audit-chain.md](docs/audit-chain.md)
 - MCP tool definitions for `/v1/messages`: [docs/mcp-tool-definitions.md](docs/mcp-tool-definitions.md)
+- MCP remote server connection security baseline (TLS / OAuth 2.1 / least privilege): [docs/mcp-remote-security.md](docs/mcp-remote-security.md)
 - Custom Provider Example: `examples/custom-provider`
 
 ## Contributing
