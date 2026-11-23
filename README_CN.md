@@ -154,6 +154,7 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 - 高级（执行器与翻译器）：[docs/sdk-advanced_CN.md](docs/sdk-advanced_CN.md)
 - 认证: [docs/sdk-access_CN.md](docs/sdk-access_CN.md)
 - 凭据加载/更新: [docs/sdk-watcher_CN.md](docs/sdk-watcher_CN.md)
+- MCP 远程服务器连接安全基线（TLS / OAuth 2.1 / 最小权限）：[docs/mcp-remote-security.md](docs/mcp-remote-security.md)
 - 自定义 Provider 示例：`examples/custom-provider`
 
 ## 贡献
