@@ -35,6 +35,10 @@ const (
 	// not be served -> 503; routing deliberately does not degrade to another
 	// model.
 	OutcomeModelUnavailable = "model_unavailable"
+	// OutcomeConstraintViolation: no candidate model meets the request's
+	// required_capabilities -> 400; the decision carries the blocked models
+	// and each one's missing capabilities so the client can act on it.
+	OutcomeConstraintViolation = "constraint_violation"
 )
 
 // Decision is the explainable, auditable output of the engine. Its fields are
@@ -42,7 +46,7 @@ const (
 // plus the outcome kind the HTTP adapter maps to a status and error body.
 type Decision struct {
 	// Outcome is one of OutcomeOK, OutcomeBudgetExceeded,
-	// OutcomeModelUnavailable.
+	// OutcomeModelUnavailable, OutcomeConstraintViolation.
 	Outcome string
 	// Model is the chosen model; empty for non-ok outcomes.
 	Model string
@@ -61,6 +65,19 @@ type Decision struct {
 	// StrategyVersion is the S1-A record number in force for this decision
 	// (0 = built-in default applied). Set by the request-facing engine.
 	StrategyVersion int64
+	// BlockedModels lists the candidates filtered out by a
+	// required_capabilities constraint, each with the capabilities it
+	// lacks. Empty when the request carried no constraint or no candidate
+	// was filtered.
+	BlockedModels []BlockedModel `json:"blocked_models,omitempty"`
+}
+
+// BlockedModel is one candidate excluded by a capability constraint.
+type BlockedModel struct {
+	// Model is the candidate model identifier.
+	Model string `json:"model"`
+	// MissingCapabilities are the required capabilities the model lacks.
+	MissingCapabilities []string `json:"missing_capabilities"`
 }
 
 // candidate is one model's precomputed decision input.
@@ -94,6 +111,7 @@ const defaultCompletionRatio = 1.0
 func Decide(strategy Strategy, snapshot PriceSnapshot, body []byte, requestedModel string, auditNote string) Decision {
 	score := ScoreBody(body)
 	estTokens := estimatedTokens(len(body))
+	requiredCapabilities := requiredCapabilitiesFromBody(body)
 
 	// Resolve the forced-model constraint first: it is a hard pin — when set,
 	// routing may only use that model and must never degrade to another
@@ -111,27 +129,64 @@ func Decide(strategy Strategy, snapshot PriceSnapshot, body []byte, requestedMod
 				RequestedModel: requestedModel,
 			}
 		}
+		if missing := missingCapabilities(forced, requiredCapabilities); len(missing) > 0 {
+			// The hard constraint outranks the forced pin: a forced model
+			// that cannot meet the request's capabilities is a 400, never a
+			// silent fallback to another model.
+			return Decision{
+				Outcome:        OutcomeConstraintViolation,
+				Model:          forced,
+				Quality:        score.Quality,
+				Reason:         "capability_constraint_violation:" + headerSafe(forced),
+				RequestedModel: requestedModel,
+				BlockedModels: []BlockedModel{
+					{Model: forced, MissingCapabilities: missing},
+				},
+			}
+		}
 		c := candidate{name: forced, level: levelFor(forced), estCost: estimateCost(price, estTokens)}
 		return decideForced(c, strategy, score, requestedModel, auditNote)
 	}
 
-	// General path: candidate set = priced models whose capability tier meets
-	// the greater of the strategy floor and the request's own needs.
-	required := levelForFloor(strategy.QualityFloor)
-	if rl := score.RequiredLevel(); rl > required {
-		required = rl
-	}
+	// General path: candidate set = priced models, constrained first by the
+	// request's required_capabilities (the hard boundary, applied before any
+	// selection), then by the capability tier that meets the greater of the
+	// strategy floor and the request's own needs.
 	seen := make(map[string]struct{}, len(snapshot.Prices))
-	cands := make([]candidate, 0, len(snapshot.Prices))
+	allCands := make([]candidate, 0, len(snapshot.Prices))
 	for name, p := range snapshot.Prices {
 		if _, dup := seen[name]; dup {
 			continue
 		}
 		seen[name] = struct{}{}
-		if !MeetsLevel(name, required) {
+		allCands = append(allCands, candidate{name: name, level: levelFor(name), estCost: estimateCost(p, estTokens)})
+	}
+
+	kept, blocked := filterByCapabilities(allCands, requiredCapabilities)
+	if len(kept) == 0 && len(blocked) > 0 {
+		// Every priced candidate violates the constraint: 400, listing each
+		// blocked model and its missing capabilities. No candidate is
+		// silently dropped below the constraint (scenario 2).
+		return Decision{
+			Outcome:        OutcomeConstraintViolation,
+			Quality:        score.Quality,
+			Reason:         "capability_constraint_violation",
+			RequestedModel: requestedModel,
+			BlockedModels:  blocked,
+		}
+	}
+
+	// Capability-tier filter on the constrained pool.
+	required := levelForFloor(strategy.QualityFloor)
+	if rl := score.RequiredLevel(); rl > required {
+		required = rl
+	}
+	cands := make([]candidate, 0, len(kept))
+	for _, c := range kept {
+		if !MeetsLevel(c.name, required) {
 			continue
 		}
-		cands = append(cands, candidate{name: name, level: levelFor(name), estCost: estimateCost(p, estTokens)})
+		cands = append(cands, c)
 	}
 	if len(cands) == 0 {
 		return Decision{
@@ -139,6 +194,7 @@ func Decide(strategy Strategy, snapshot PriceSnapshot, body []byte, requestedMod
 			Quality:        score.Quality,
 			Reason:         "no_eligible_candidate_meets_quality_floor",
 			RequestedModel: requestedModel,
+			BlockedModels:  blocked,
 		}
 	}
 
@@ -159,13 +215,16 @@ func Decide(strategy Strategy, snapshot PriceSnapshot, body []byte, requestedMod
 				Quality:        score.Quality,
 				Reason:         "budget_exceeded:max_budget=" + formatUSD(cap),
 				RequestedModel: requestedModel,
+				BlockedModels:  blocked,
 			}
 		}
 		cands = kept
 	}
 
 	chosen := pick(cands, strategy, requestedModel)
-	return okDecision(chosen, score, requestedModel, auditNote)
+	decision := okDecision(chosen, score, requestedModel, auditNote)
+	decision.BlockedModels = blocked
+	return decision
 }
 
 // decideForced handles the only_allow_model pin: honor it (user control),
