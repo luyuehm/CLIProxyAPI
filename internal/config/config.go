@@ -176,4 +176,10 @@ type Config struct {
 	AnomalyDetection AnomalyDetectionConfig `yaml:"anomaly-detection" json:"anomaly-detection"`
 	// ShadowConfig configures the enterprise shadow traffic mirroring engine.
 	ShadowConfig ShadowConfig `yaml:"shadow" json:"shadow"`
+	// Fallback configures the automatic provider fallback engine (RIC-3143,
+	// OPENROUT-001): when the preferred provider fails, the request is
+	// transparently retried on the next healthy provider in the chain. An
+	// empty block disables the engine entirely (the default), leaving the
+	// gateway's existing credential-level failover as the only behavior.
+	Fallback FallbackConfig `yaml:"fallback" json:"fallback"`
 }

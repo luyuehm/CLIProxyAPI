@@ -105,7 +105,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, interceptErr
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
+	resp, fallbackState, err := h.executeWithFallback(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		// RIC-2532-A: when the request ran inside a KEEPER route boundary
@@ -116,6 +116,15 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
+		}
+		// RIC-3143: a provider-level fallback that exhausted its chain is a
+		// 503 carrying attempted_models, not a raw credential error. A
+		// request that failed without falling back keeps its raw error.
+		if fallbackErr := fallbackState.buildErrorMessage(); fallbackErr != nil {
+			setOpenRouterRouteError(fallbackErr, routeInfoCollector, ctx)
+			routeInfoCollector.logFallbackIfAny()
+			lifecycle.completeError(ctx, fallbackErr)
+			return nil, nil, fallbackErr
 		}
 		errMsg := executionErrorMessage(err)
 		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
@@ -130,6 +139,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
 	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	responseHeaders = fallbackState.attachToHeaders(responseHeaders)
 	routeInfoCollector.logFallbackIfAny()
 	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
 		body = routeInfoCollector.InjectIntoJSON(ctx, body)
@@ -201,7 +211,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 		return nil, nil, interceptErr
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	resp, err := h.AuthManager.ExecuteCount(ctx, providers, req, opts)
+	resp, fallbackState, err := h.executeCountWithFallback(ctx, providers, req, opts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		// RIC-2532-A: surface the contract's 503 route_boundary_violation
@@ -211,6 +221,12 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 			routeInfoCollector.logFallbackIfAny()
 			lifecycle.completeError(ctx, boundaryErr)
 			return nil, nil, boundaryErr
+		}
+		if fallbackErr := fallbackState.buildErrorMessage(); fallbackErr != nil {
+			setOpenRouterRouteError(fallbackErr, routeInfoCollector, ctx)
+			routeInfoCollector.logFallbackIfAny()
+			lifecycle.completeError(ctx, fallbackErr)
+			return nil, nil, fallbackErr
 		}
 		errMsg := executionErrorMessage(err)
 		setOpenRouterRouteError(errMsg, routeInfoCollector, ctx)
@@ -225,6 +241,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
 	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
+	responseHeaders = fallbackState.attachToHeaders(responseHeaders)
 	routeInfoCollector.logFallbackIfAny()
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
