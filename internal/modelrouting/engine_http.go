@@ -45,6 +45,10 @@ const (
 	// ErrorModelUnavailable is the 503 body code when the forced model
 	// cannot be served and routing must not degrade.
 	ErrorModelUnavailable = "model_unavailable"
+	// ErrorCapabilityConstraint is the 400 body code when no candidate model
+	// meets the request's required_capabilities. The body carries the
+	// blocked_models list and each model's missing capabilities.
+	ErrorCapabilityConstraint = "capability_constraint_violation"
 )
 
 // Engine is the request-facing decision engine: it owns the S1-A strategy
@@ -157,8 +161,40 @@ func ErrorFor(d Decision) *interfaces.ErrorMessage {
 			message = "no eligible candidate model satisfies the routing quality floor"
 		}
 		return terminalError(http.StatusServiceUnavailable, ErrorModelUnavailable, message)
+	case OutcomeConstraintViolation:
+		return capabilityConstraintError(d)
 	default:
 		return nil
+	}
+}
+
+// capabilityConstraintError builds the 400 body for a request whose
+// required_capabilities no candidate can satisfy. It carries the filtered
+// blocked_models list with each one's missing capabilities, per the
+// OPENROUT-003 acceptance contract.
+func capabilityConstraintError(d Decision) *interfaces.ErrorMessage {
+	blocked := d.BlockedModels
+	if blocked == nil {
+		blocked = []BlockedModel{}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":           ErrorCapabilityConstraint,
+			"type":           ErrorCapabilityConstraint,
+			"message":        "no candidate model satisfies the required capabilities",
+			"blocked_models": blocked,
+		},
+	})
+	headers := make(http.Header)
+	if reason := headerSafe("route_rejected:" + ErrorCapabilityConstraint); reason != "" {
+		headers.Set(HeaderReason, reason)
+	}
+	return &interfaces.ErrorMessage{
+		StatusCode:     http.StatusBadRequest,
+		DirectResponse: true,
+		Body:           body,
+		Headers:        headers,
+		Error:          fmt.Errorf("modelrouting: route rejected (%s)", ErrorCapabilityConstraint),
 	}
 }
 
@@ -189,7 +225,7 @@ func terminalError(status int, code, message string) *interfaces.ErrorMessage {
 // est_cost, quality, reason, outcome). requestID is supplied by the caller
 // (the request-lifecycle id); strategy_version 0 marks the built-in default.
 func LogDecision(requestID string, d Decision) {
-	logger.WithFields(logrus.Fields{
+	fields := logrus.Fields{
 		"request_id":       requestID,
 		"strategy_version": d.StrategyVersion,
 		"model":            d.Model,
@@ -197,5 +233,19 @@ func LogDecision(requestID string, d Decision) {
 		"quality":          d.Quality,
 		"reason":           d.Reason,
 		"outcome":          d.Outcome,
-	}).Info("modelrouting: decision")
+	}
+	if len(d.BlockedModels) > 0 {
+		fields["blocked_models"] = d.BlockedModels
+		// A capability constraint that excludes at least one candidate is a
+		// routing boundary hit worth surfacing: log it as a warning so the
+		// constraint's effect is auditable (the issue's "record constraint
+		// hits" scope), while a normal decision stays an Info line.
+		if d.Outcome == OutcomeConstraintViolation {
+			logger.WithFields(fields).Warn("modelrouting: decision rejected by capability constraint")
+			return
+		}
+		logger.WithFields(fields).Info("modelrouting: decision with capability constraint")
+		return
+	}
+	logger.WithFields(fields).Info("modelrouting: decision")
 }
