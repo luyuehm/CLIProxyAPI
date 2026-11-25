@@ -44,8 +44,10 @@ A non-streaming chat-completion response carries one additional object:
 | `POST /v1/responses` (Responses API) | no |
 | Interactions API | no |
 | Video / image generation endpoints | no |
+| Legacy `POST /v1/completions` | no — the completions response shape is rebuilt without `metadata` |
 | Streaming responses (`stream: true`) | no — headers only |
 | Internal host model callbacks | no |
+| Plugin-executor routes | no — no provider is attributed at the credential level |
 
 Streaming clients keep the existing always-on headers (`X-OpenRouter-Route`,
 `X-OpenRouter-Fallback`, `X-Fallback-Reason`): the trace is a body contract and
@@ -66,7 +68,7 @@ streaming frame. On a terminal failure the existing error contract is unchanged
 |---|---|---|
 | `schema_version` | string | Payload shape version. A breaking change bumps it. |
 | `request_id` | string | Inbound request ID (absent when the caller did not supply one). |
-| `provider_id` | string | The provider whose credential actually served the request. On the error path unreachable (see Scope). |
+| `provider_id` | string | The provider whose credential actually served the request. Not rendered at all when no provider can be attributed (see Scope). |
 | `model` | string | The upstream model identifier used by the serving attempt. |
 | `fallback_used` | bool | `true` when a failed attempt preceded the serving attempt **and** the target moved. |
 | `switch_reason` | string | `none` when no switch happened; otherwise a bounded code (see below). Always present. |
@@ -109,6 +111,16 @@ internal availability retry, not a routing switch: `fallback_used` stays
 `false` and `switch_reason` stays `none`. This matches `X-OpenRouter-Fallback`,
 so a monitor cannot see the header and the body disagree.
 
+For a multi-hop chain the reason names the hop that actually caused the serving
+switch — the last failed provider before the serving one, which is the same
+record `X-Fallback-Reason` reads. A chain `A(500) -> B(504) -> C` reports
+`timeout`, because `B` (not `A`) is the hop that moved the request onto `C`.
+
+A switch made by the fallback engine while the primary provider was already
+cooling down produces no upstream attempt at all, so the engine's own decision
+record — not the attempt trail — is the source for `fallback_used`,
+`switch_reason`, and `provider_id` in that case.
+
 ## Disclosure levels
 
 Configured under `routing-trace.mode`:
@@ -127,9 +139,13 @@ API keys:
   error and never the attempt trail, so a free tier degrades gracefully;
 - when the list is empty, every authenticated key follows `mode`.
 
-Keys are compared verbatim against the inbound `Authorization: Bearer`,
-`X-Api-Key` or `X-Goog-Api-Key` credential (already authenticated by the access
-layer) and are never logged, echoed, or included in the response.
+Keys are compared verbatim against the inbound credential, extracted exactly
+the way the access layer extracts it (`Authorization: Bearer <key>`, a raw
+`Authorization: <key>`, `X-Api-Key`, `X-Goog-Api-Key`, or the `?key=` /
+`?auth_token=` query parameters). A key that authenticated through any of those
+spellings is recognised — the entitlement never depends on how the client
+happened to send its credential. Keys are never logged, echoed, or included in
+the response.
 
 ```yaml
 routing-trace:
@@ -149,6 +165,10 @@ routing-trace:
   codes are sanitized (control characters folded to `_`, length capped), so a
   pathological retry loop or a hostile upstream code cannot bloat or corrupt
   the response.
+- **Compressed bodies keep their trace.** An upstream may return a gzipped
+  body regardless of what the client asked for (the Claude API does). The body
+  is decompressed, merged, and recompressed, so the trace is not silently lost;
+  a gzip body that is not JSON is left byte-for-byte untouched.
 - **No credential material.** `provider_id` is the provider registration name;
   `auth_index` (a credential identifier) is never included.
 

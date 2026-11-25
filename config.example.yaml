@@ -276,8 +276,9 @@ routing-trace:
   mode: summary
   # When non-empty, only these client API keys receive the `full` variant;
   # every other key gets `summary` (never an error). Compared verbatim against
-  # the inbound Authorization: Bearer / X-Api-Key / X-Goog-Api-Key credential.
-  # Ignored when mode is off or summary. Keys are never logged or echoed.
+  # whichever credential spelling authenticated the request (see
+  # docs/routing-trace.md). Ignored when mode is off or summary. Keys are never
+  # logged or echoed.
   full-trace-api-keys: []
 
 # Codex provider behavior.

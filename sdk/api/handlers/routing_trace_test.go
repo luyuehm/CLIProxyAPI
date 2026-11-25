@@ -269,7 +269,7 @@ func TestAttachRoutingTraceMergesIntoSiblingMetadata(t *testing.T) {
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
 
 	body := []byte(`{"id":"x","metadata":{"existing":"value"}}`)
-	updated := handler.attachRoutingTrace(context.Background(), body, collector)
+	updated := handler.attachRoutingTrace(context.Background(), body, collector, nil)
 	if got := gjson.GetBytes(updated, "metadata.existing").String(); got != "value" {
 		t.Fatalf("sibling metadata field lost: %s", updated)
 	}
@@ -286,7 +286,7 @@ func TestAttachRoutingTraceSkipsNonObjectMetadata(t *testing.T) {
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Outcome: coreexecutor.RouteOutcomeSuccess})
 
 	body := []byte(`{"id":"x","metadata":"opaque"}`)
-	if got := handler.attachRoutingTrace(context.Background(), body, collector); string(got) != string(body) {
+	if got := handler.attachRoutingTrace(context.Background(), body, collector, nil); string(got) != string(body) {
 		t.Fatalf("non-object metadata was modified: %s", got)
 	}
 }
@@ -299,7 +299,7 @@ func TestAttachRoutingTraceSkipsNonJSONBody(t *testing.T) {
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Outcome: coreexecutor.RouteOutcomeSuccess})
 
 	for _, body := range [][]byte{[]byte(`not json`), []byte(`[1,2,3]`), []byte(``), nil} {
-		if got := handler.attachRoutingTrace(context.Background(), body, collector); string(got) != string(body) {
+		if got := handler.attachRoutingTrace(context.Background(), body, collector, nil); string(got) != string(body) {
 			t.Fatalf("body %q was modified to %q", body, got)
 		}
 	}
@@ -308,11 +308,11 @@ func TestAttachRoutingTraceSkipsNonJSONBody(t *testing.T) {
 // No attributable provider means no trace rather than an empty provider_id.
 func TestBuildRoutingTraceRequiresAttribution(t *testing.T) {
 	collector := NewRouteInfoCollector(nil, false)
-	if _, ok := collector.buildRoutingTrace(context.Background(), false); ok {
+	if _, ok := collector.buildRoutingTrace(context.Background(), false, nil); ok {
 		t.Fatal("empty collector must not render a trace")
 	}
 	var nilCollector *RouteInfoCollector
-	if _, ok := nilCollector.buildRoutingTrace(context.Background(), false); ok {
+	if _, ok := nilCollector.buildRoutingTrace(context.Background(), false, nil); ok {
 		t.Fatal("nil collector must not render a trace")
 	}
 }
@@ -324,7 +324,7 @@ func TestBuildRoutingTraceSameTargetRetryIsNotFallback(t *testing.T) {
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeFailed, Status: 503, Code: "upstream_503"})
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
 
-	trace, ok := collector.buildRoutingTrace(context.Background(), false)
+	trace, ok := collector.buildRoutingTrace(context.Background(), false, nil)
 	if !ok {
 		t.Fatal("trace must render")
 	}
@@ -385,12 +385,18 @@ func TestRoutingTraceAttemptListIsBounded(t *testing.T) {
 	}
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providerb", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
 
-	trace, ok := collector.buildRoutingTrace(context.Background(), true)
+	trace, ok := collector.buildRoutingTrace(context.Background(), true, nil)
 	if !ok {
 		t.Fatal("trace must render")
 	}
-	if len(trace.Attempts) > routingTraceAttemptLimit {
-		t.Fatalf("attempts = %d, want <= %d", len(trace.Attempts), routingTraceAttemptLimit)
+	// Pinned literally, not against routingTraceAttemptLimit: comparing to the
+	// constant the code uses would pass even if the constant itself drifted.
+	const wantBound = 16
+	if len(trace.Attempts) != wantBound {
+		t.Fatalf("attempts = %d, want exactly %d (the documented bound)", len(trace.Attempts), wantBound)
+	}
+	if routingTraceAttemptLimit != wantBound {
+		t.Fatalf("routingTraceAttemptLimit = %d, want the documented %d", routingTraceAttemptLimit, wantBound)
 	}
 	if trace.LatencyMS < 0 {
 		t.Fatalf("latency_ms = %d, want >= 0", trace.LatencyMS)
@@ -404,7 +410,7 @@ func TestRoutingTraceSummaryPayloadIsSmall(t *testing.T) {
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeFailed, Status: 503})
 	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providerb", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
 
-	trace, ok := collector.buildRoutingTrace(context.Background(), false)
+	trace, ok := collector.buildRoutingTrace(context.Background(), false, nil)
 	if !ok {
 		t.Fatal("trace must render")
 	}
@@ -443,5 +449,185 @@ func TestRoutingTraceRequestedBoundaries(t *testing.T) {
 				t.Fatalf("routingTraceRequested(%q, %+v) = %v, want %v", tc.protocol, tc.opts, got, tc.want)
 			}
 		})
+	}
+}
+
+// The engine reports a switch that never produced a route event: a provider
+// already cooling down is skipped without invoking its executor, so the
+// collector alone would report fallback_used=false while X-Fallback-Reason
+// reports the switch. The trace must follow the engine.
+func TestBuildRoutingTraceEngineSwitchWithoutEvents(t *testing.T) {
+	collector := NewRouteInfoCollector([]string{"providera", "providerb"}, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providerb", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	state := &fallbackOutcomeState{}
+	state.set(fallbackAttempt{Ran: true, Outcome: fallback.Outcome{
+		Success:  true,
+		Provider: "providerb",
+		Fallbacks: []fallback.FallbackRecord{
+			{From: "providera", To: "providerb", Reason: "provider_providera_500"},
+		},
+	}})
+
+	trace, ok := collector.buildRoutingTrace(context.Background(), false, state)
+	if !ok {
+		t.Fatal("trace must render")
+	}
+	if !trace.FallbackUsed {
+		t.Fatalf("fallback_used = false for an engine switch: %+v", trace)
+	}
+	if trace.SwitchReason != "http_500" {
+		t.Fatalf("switch_reason = %q, want http_500 (from the engine code)", trace.SwitchReason)
+	}
+	if trace.ProviderID != "providerb" {
+		t.Fatalf("provider_id = %q, want providerb", trace.ProviderID)
+	}
+}
+
+// A provider that is merely cooling down reports the engine's own code when no
+// status can be recovered.
+func TestBuildRoutingTraceEngineCooldownReason(t *testing.T) {
+	collector := NewRouteInfoCollector(nil, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providerb", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	state := &fallbackOutcomeState{}
+	state.set(fallbackAttempt{Ran: true, Outcome: fallback.Outcome{
+		Success:   true,
+		Provider:  "providerb",
+		Fallbacks: []fallback.FallbackRecord{{From: "providera", To: "providerb", Reason: "provider_providera_cooled_down"}},
+	}})
+
+	trace, ok := collector.buildRoutingTrace(context.Background(), false, state)
+	if !ok || !trace.FallbackUsed {
+		t.Fatalf("trace = %+v ok=%v, want a fallback", trace, ok)
+	}
+	if trace.SwitchReason != "provider_providera_cooled_down" {
+		t.Fatalf("switch_reason = %q, want the engine code", trace.SwitchReason)
+	}
+}
+
+// A multi-hop chain reports the hop that actually caused the serving switch
+// (the same record X-Fallback-Reason reads), not the first failure.
+func TestBuildRoutingTraceMultiHopReportsServingHop(t *testing.T) {
+	collector := NewRouteInfoCollector([]string{"providera", "providerb", "providerc"}, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeFailed, Status: 500})
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providerb", Model: "m", Outcome: coreexecutor.RouteOutcomeFailed, Status: 504})
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providerc", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	state := &fallbackOutcomeState{}
+	state.set(fallbackAttempt{Ran: true, Outcome: fallback.Outcome{
+		Success:  true,
+		Provider: "providerc",
+		Fallbacks: []fallback.FallbackRecord{
+			{From: "providera", To: "providerb", Reason: "provider_providera_500"},
+			{From: "providerb", To: "providerc", Reason: "provider_providerb_504"},
+		},
+	}})
+
+	trace, ok := collector.buildRoutingTrace(context.Background(), true, state)
+	if !ok {
+		t.Fatal("trace must render")
+	}
+	// The serving hop is providerb -> providerc, and providerb timed out.
+	if trace.SwitchReason != "timeout" {
+		t.Fatalf("switch_reason = %q, want timeout (the serving hop's reason)", trace.SwitchReason)
+	}
+	if len(trace.Attempts) != 2 || trace.Attempts[0].ProviderID != "providera" || trace.Attempts[1].ProviderID != "providerb" {
+		t.Fatalf("attempts = %+v, want [providera providerb] in order", trace.Attempts)
+	}
+}
+
+// An engine same-target retry record (From == To) is not a switch.
+func TestRoutingTraceEngineSameTargetRecordIsNotSwitch(t *testing.T) {
+	state := &fallbackOutcomeState{}
+	state.set(fallbackAttempt{Ran: true, Outcome: fallback.Outcome{
+		Success:   true,
+		Provider:  "providera",
+		Fallbacks: []fallback.FallbackRecord{{From: "providera", To: "providera", Reason: "provider_providera_503"}},
+	}})
+	if _, _, _, switched := routingTraceEngineSwitch(state); switched {
+		t.Fatal("From == To was treated as a switch")
+	}
+}
+
+// The full-trace entitlement follows the same credential spellings the access
+// layer accepts; a narrower extraction would silently downgrade an entitled
+// key that authenticated through another spelling.
+func TestRoutingTraceCallerKeyAcceptsEveryAccessSpelling(t *testing.T) {
+	build := func(header, value string, query string) context.Context {
+		gin.SetMode(gin.TestMode)
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		target := "/v1/chat/completions"
+		if query != "" {
+			target += "?" + query
+		}
+		ginCtx.Request = httptest.NewRequest(http.MethodPost, target, nil)
+		if header != "" {
+			ginCtx.Request.Header.Set(header, value)
+		}
+		return context.WithValue(context.Background(), "gin", ginCtx)
+	}
+	cases := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{name: "bearer", ctx: build("Authorization", "Bearer paid-key", ""), want: "paid-key"},
+		{name: "raw authorization", ctx: build("Authorization", "paid-key", ""), want: "paid-key"},
+		{name: "x-api-key", ctx: build("X-Api-Key", "paid-key", ""), want: "paid-key"},
+		{name: "x-goog-api-key", ctx: build("X-Goog-Api-Key", "paid-key", ""), want: "paid-key"},
+		{name: "query key", ctx: build("", "", "key=paid-key"), want: "paid-key"},
+		{name: "query auth_token", ctx: build("", "", "auth_token=paid-key"), want: "paid-key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := routingTraceCallerKey(tc.ctx); got != tc.want {
+				t.Fatalf("routingTraceCallerKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A gzipped upstream body keeps its trace: the body is decompressed, merged,
+// and recompressed rather than silently skipped.
+func TestAttachRoutingTraceMergesGzipBody(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	collector := NewRouteInfoCollector([]string{"providera"}, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	plain := []byte(`{"id":"x","object":"chat.completion"}`)
+	compressed, errCompress := routingTraceCompress(plain)
+	if errCompress != nil {
+		t.Fatalf("compress: %v", errCompress)
+	}
+	updated := handler.attachRoutingTrace(context.Background(), compressed, collector, nil)
+	if len(updated) < 2 || updated[0] != 0x1f || updated[1] != 0x8b {
+		t.Fatalf("result is not gzip: %x", updated[:min(len(updated), 2)])
+	}
+	decompressed, wasCompressed := routingTraceDecompress(updated)
+	if !wasCompressed {
+		t.Fatal("result did not decompress")
+	}
+	if got := gjson.GetBytes(decompressed, "metadata.routing_trace.provider_id").String(); got != "providera" {
+		t.Fatalf("provider_id after round trip = %q, want providera (%s)", got, decompressed)
+	}
+	if got := gjson.GetBytes(decompressed, "object").String(); got != "chat.completion" {
+		t.Fatalf("sibling field lost: %s", decompressed)
+	}
+}
+
+// A gzip body that is not valid JSON is left byte-for-byte untouched (never
+// replaced with something we invented).
+func TestAttachRoutingTraceLeavesNonJSONGzipUntouched(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	collector := NewRouteInfoCollector([]string{"providera"}, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	compressed, errCompress := routingTraceCompress([]byte(`not json`))
+	if errCompress != nil {
+		t.Fatalf("compress: %v", errCompress)
+	}
+	if got := handler.attachRoutingTrace(context.Background(), compressed, collector, nil); string(got) != string(compressed) {
+		t.Fatal("non-JSON gzip body was modified")
 	}
 }

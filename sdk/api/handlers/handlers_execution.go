@@ -145,7 +145,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		body = routeInfoCollector.InjectIntoJSON(ctx, body)
 	}
 	if routingTraceRequested(entryProtocol, execOptions) {
-		body = h.attachRoutingTrace(ctx, body, routeInfoCollector)
+		body = h.attachRoutingTrace(ctx, body, routeInfoCollector, fallbackState)
 	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
@@ -310,7 +310,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
 	routeInfoCollector.logFallbackIfAny()
 	if routingTraceRequested(entryProtocol, execOptions) {
-		body = h.attachRoutingTrace(execCtx, body, routeInfoCollector)
+		body = h.attachRoutingTrace(execCtx, body, routeInfoCollector, nil)
 	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
