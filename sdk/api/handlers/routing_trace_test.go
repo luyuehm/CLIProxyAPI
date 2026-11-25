@@ -631,3 +631,29 @@ func TestAttachRoutingTraceLeavesNonJSONGzipUntouched(t *testing.T) {
 		t.Fatal("non-JSON gzip body was modified")
 	}
 }
+
+// routingTraceEngineSwitch must pick the committed switch INTO the serving
+// provider — the exact rule X-Fallback-Reason uses (`record.To == Provider`).
+// Without that filter a trailing record describing a different move would win
+// and the body would name a hop the header does not.
+func TestRoutingTraceEngineSwitchSkipsNonServingRecords(t *testing.T) {
+	state := &fallbackOutcomeState{}
+	state.set(fallbackAttempt{Ran: true, Outcome: fallback.Outcome{
+		Success:  true,
+		Provider: "providerb",
+		Fallbacks: []fallback.FallbackRecord{
+			{From: "providera", To: "providerb", Reason: "provider_providera_500"},
+			// A record that moves between two providers neither of which
+			// served the request.
+			{From: "providerx", To: "providery", Reason: "provider_providerx_503"},
+		},
+	}})
+
+	provider, from, reason, switched := routingTraceEngineSwitch(state)
+	if !switched {
+		t.Fatal("switch not detected")
+	}
+	if provider != "providerb" || from != "providera" || reason != "provider_providera_500" {
+		t.Fatalf("switch = (%q, %q, %q), want (providerb, providera, provider_providera_500)", provider, from, reason)
+	}
+}
