@@ -657,3 +657,91 @@ func TestRoutingTraceEngineSwitchSkipsNonServingRecords(t *testing.T) {
 		t.Fatalf("switch = (%q, %q, %q), want (providerb, providera, provider_providera_500)", provider, from, reason)
 	}
 }
+
+// The entitlement must follow the principal that actually authenticated. A
+// stale Authorization header beside a valid X-Api-Key must not decide the
+// disclosure level, and a listed key must not win over a different key that
+// really authenticated.
+func TestRoutingTraceCallerKeyPrefersAuthenticatedPrincipal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ginCtx.Request.Header.Set("Authorization", "Bearer stale-key")
+	ginCtx.Request.Header.Set("X-Api-Key", "listed-key")
+	ginCtx.Set("userApiKey", "listed-key")
+
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	if got := routingTraceCallerKey(ctx); got != "listed-key" {
+		t.Fatalf("routingTraceCallerKey() = %q, want the authenticated principal listed-key", got)
+	}
+}
+
+// Without an access manager (auth disabled) the fallback extraction must use
+// the access layer's precedence: Authorization, then X-Goog-Api-Key, then
+// X-Api-Key, then the query parameters.
+func TestRoutingTraceCallerKeyFallbackPrecedence(t *testing.T) {
+	build := func(headers map[string]string, query string) context.Context {
+		gin.SetMode(gin.TestMode)
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		target := "/v1/chat/completions"
+		if query != "" {
+			target += "?" + query
+		}
+		ginCtx.Request = httptest.NewRequest(http.MethodPost, target, nil)
+		for name, value := range headers {
+			ginCtx.Request.Header.Set(name, value)
+		}
+		return context.WithValue(context.Background(), "gin", ginCtx)
+	}
+	cases := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{name: "authorization wins", ctx: build(map[string]string{"Authorization": "Bearer a", "X-Api-Key": "b", "X-Goog-Api-Key": "c"}, ""), want: "a"},
+		{name: "goog before api key", ctx: build(map[string]string{"X-Api-Key": "b", "X-Goog-Api-Key": "c"}, ""), want: "c"},
+		{name: "headers before query", ctx: build(map[string]string{"X-Api-Key": "b"}, "key=q"), want: "b"},
+		{name: "query key before auth_token", ctx: build(nil, "key=q&auth_token=t"), want: "q"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := routingTraceCallerKey(tc.ctx); got != tc.want {
+				t.Fatalf("routingTraceCallerKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// An engine provider that nothing corroborates must not overwrite the
+// provider the route events attributed.
+func TestBuildRoutingTraceRejectsUncorroboratedEngineProvider(t *testing.T) {
+	collector := NewRouteInfoCollector([]string{"providera"}, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Model: "m", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	state := &fallbackOutcomeState{}
+	state.set(fallbackAttempt{Ran: true, Outcome: fallback.Outcome{Success: true, Provider: "ghost"}})
+
+	trace, ok := collector.buildRoutingTrace(context.Background(), false, state)
+	if !ok {
+		t.Fatal("trace must render")
+	}
+	if trace.ProviderID != "providera" {
+		t.Fatalf("provider_id = %q, want providera (the only corroborated provider)", trace.ProviderID)
+	}
+	if trace.FallbackUsed {
+		t.Fatal("an uncorroborated engine provider must not imply a fallback")
+	}
+}
+
+// A JSON null metadata carries no content, so the trace may replace it instead
+// of dropping the field entirely.
+func TestAttachRoutingTraceReplacesNullMetadata(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	collector := NewRouteInfoCollector([]string{"providera"}, false)
+	collector.ReportEvent(coreexecutor.RouteEvent{Provider: "providera", Outcome: coreexecutor.RouteOutcomeSuccess})
+
+	updated := handler.attachRoutingTrace(context.Background(), []byte(`{"id":"x","metadata":null}`), collector, nil)
+	if got := gjson.GetBytes(updated, "metadata.routing_trace.provider_id").String(); got != "providera" {
+		t.Fatalf("null metadata not replaced: %s", updated)
+	}
+}

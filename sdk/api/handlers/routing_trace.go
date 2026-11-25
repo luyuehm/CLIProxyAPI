@@ -31,6 +31,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -142,7 +143,10 @@ func (h *BaseAPIHandler) attachRoutingTrace(ctx context.Context, body []byte, co
 	if !root.IsObject() {
 		return body
 	}
-	if metadata := root.Get(RoutingTraceMetadataField); metadata.Exists() && !metadata.IsObject() {
+	// A non-object metadata value is never overwritten: doing so would destroy
+	// an upstream field the gateway does not own. A JSON null is the exception —
+	// it carries no content, so replacing it destroys nothing.
+	if metadata := root.Get(RoutingTraceMetadataField); metadata.Exists() && !metadata.IsObject() && metadata.Type != gjson.Null {
 		return body
 	}
 	encoded, errMarshal := json.Marshal(trace)
@@ -235,12 +239,17 @@ func routingTraceKeyListed(keys []string, key string) bool {
 	return false
 }
 
-// routingTraceCallerKey extracts the inbound client credential, mirroring the
-// access layer's acceptance rules exactly (internal/access/config_access): an
-// Authorization header with or without the "Bearer " prefix, the X-Api-Key and
-// X-Goog-Api-Key headers, and the ?key= / ?auth_token= query parameters. A
-// narrower extraction would silently downgrade an entitled key to the summary
-// variant just because it authenticated through a different spelling.
+// routingTraceCallerKey returns the credential that AUTHENTICATED the request:
+// the access layer's principal, stored in the gin context by the auth
+// middleware. This is deliberately not a re-extraction from headers — several
+// credential spellings may be present at once (a stale Authorization beside a
+// valid X-Api-Key), and only the access layer knows which one it accepted.
+// Deriving the entitlement from a header the request did not authenticate with
+// would grant or deny the detailed variant for the wrong principal.
+//
+// The header/query fallback exists only for deployments that run without an
+// access manager (auth disabled); it then mirrors the access layer's own
+// precedence: Authorization, X-Goog-Api-Key, X-Api-Key, ?key=, ?auth_token=.
 func routingTraceCallerKey(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -249,13 +258,17 @@ func routingTraceCallerKey(ctx context.Context) string {
 	if !ok || ginCtx == nil || ginCtx.Request == nil {
 		return ""
 	}
+	if principal := routingTraceAuthenticatedPrincipal(ginCtx); principal != "" {
+		return principal
+	}
 	if token := routingTraceAuthorizationToken(ginCtx.GetHeader("Authorization")); token != "" {
 		return token
 	}
-	for _, header := range []string{"X-Api-Key", "X-Goog-Api-Key"} {
-		if value := strings.TrimSpace(ginCtx.GetHeader(header)); value != "" {
-			return value
-		}
+	if value := strings.TrimSpace(ginCtx.GetHeader("X-Goog-Api-Key")); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(ginCtx.GetHeader("X-Api-Key")); value != "" {
+		return value
 	}
 	if ginCtx.Request.URL != nil {
 		query := ginCtx.Request.URL.Query()
@@ -266,6 +279,20 @@ func routingTraceCallerKey(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+// routingTraceAuthenticatedPrincipal reads the access layer's authenticated
+// principal (set as "userApiKey" by the auth middleware), which is the only
+// value that answers "which key is this request entitled under?".
+func routingTraceAuthenticatedPrincipal(ginCtx *gin.Context) string {
+	if ginCtx == nil {
+		return ""
+	}
+	value, exists := ginCtx.Get("userApiKey")
+	if !exists || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // routingTraceAuthorizationToken mirrors the access layer's bearer parsing: a
@@ -355,8 +382,11 @@ func (c *RouteInfoCollector) buildRoutingTrace(ctx context.Context, full bool, s
 
 	// The engine's outcome is authoritative for "was there a switch, and into
 	// which provider" because it sees decisions that never reached an executor.
+	// It is only adopted when it agrees with something we can see: a reported
+	// switch, or an event naming that provider. An unreconciled engine value
+	// must not overwrite the provider the events attributed.
 	engineProvider, engineFailedFrom, engineReason, engineSwitched := routingTraceEngineSwitch(state)
-	if engineProvider != "" {
+	if engineProvider != "" && (engineSwitched || routingTraceNamesProvider(events, engineProvider)) {
 		servingProvider = routingTracePreferredProviderName(events, engineProvider)
 		if servingModel == "" {
 			servingModel = lastModel
@@ -453,6 +483,18 @@ func routingTraceEngineSwitch(state *fallbackOutcomeState) (provider, from, reas
 		return provider, record.From, record.Reason, true
 	}
 	return provider, "", "", false
+}
+
+// routingTraceNamesProvider reports whether any route event names the given
+// provider (case-insensitively). It is the corroboration test used before an
+// engine-provided provider name is allowed to override the event-derived one.
+func routingTraceNamesProvider(events []coreexecutor.RouteEvent, provider string) bool {
+	for _, event := range events {
+		if event.Provider != "" && strings.EqualFold(event.Provider, provider) {
+			return true
+		}
+	}
+	return false
 }
 
 // routingTracePreferredProviderName recovers the provider's registration
