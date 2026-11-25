@@ -47,6 +47,34 @@ When the whole chain failed, the line is emitted at WARN level with no
 `served_model`, so a production incident has an auditable trail of every
 failed candidate and the final reason.
 
+## On-by-default response body contract (`metadata.routing_trace`)
+
+The headers above answer "which provider served this request" for clients that
+can read headers. Non-streaming chat-completion responses additionally carry
+the same decision **in the body**, so an SDK or log pipeline can attribute a
+completion without header parsing and without the `?debug=true` switch:
+
+```json
+"metadata": {
+  "routing_trace": {
+    "schema_version": "1.0",
+    "provider_id": "anthropic",
+    "model": "gpt-5.1",
+    "fallback_used": true,
+    "switch_reason": "timeout"
+  }
+}
+```
+
+`routing-trace.mode` selects `off` / `summary` (default) / `full`, and
+`routing-trace.full-trace-api-keys` narrows the detailed variant to listed
+client keys (every other key receives the summary variant, never an error).
+The field is scoped to client-facing chat-completion protocols: the Responses
+API, the Interactions API, video endpoints, internal model callbacks, and
+streaming responses are byte-for-byte unchanged and keep the headers. The full
+schema, the bounded `switch_reason` vocabulary, and the safety guards are in
+[routing-trace.md](routing-trace.md).
+
 ## Debug routing audit (`?debug=true`)
 
 Automatic routing is a black box by default: a response names only the model,

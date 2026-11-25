@@ -261,6 +261,25 @@ fallback:
   backoff-base: 5s # first backoff cooldown; default 5s
   backoff-max: 5m # cooldown cap; default 5m
 
+# Routing trace response contract (RIC-3275, OPENROUT-001).
+# Adds a `metadata.routing_trace` object to non-streaming chat-completion
+# responses (OpenAI chat, Claude messages, Gemini content) naming the provider
+# that actually served the request, whether a fallback switched it, and why.
+# Streaming responses and the Responses / Interactions APIs are unchanged: they
+# keep the existing X-OpenRouter-Route / X-OpenRouter-Fallback /
+# X-Fallback-Reason headers. The trace never changes a status code or an error
+# body. See docs/routing-trace.md for the full schema.
+routing-trace:
+  # off | summary | full.
+  #   summary (default) — provider_id, model, fallback_used, switch_reason.
+  #   full              — also candidates, decision_path, attempts, latency_ms.
+  mode: summary
+  # When non-empty, only these client API keys receive the `full` variant;
+  # every other key gets `summary` (never an error). Compared verbatim against
+  # the inbound Authorization: Bearer / X-Api-Key / X-Goog-Api-Key credential.
+  # Ignored when mode is off or summary. Keys are never logged or echoed.
+  full-trace-api-keys: []
+
 # Codex provider behavior.
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,
