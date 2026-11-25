@@ -745,3 +745,40 @@ func TestAttachRoutingTraceReplacesNullMetadata(t *testing.T) {
 		t.Fatalf("null metadata not replaced: %s", updated)
 	}
 }
+
+// An access layer that authenticated without naming a principal must not fall
+// through to header extraction: else a listed key in a header it never
+// authenticated would grant the detailed variant.
+func TestRoutingTraceCallerKeyEmptyPrincipalFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ginCtx.Request.Header.Set("Authorization", "Bearer listed-key")
+	ginCtx.Set("userApiKey", "")
+
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+	if got := routingTraceCallerKey(ctx); got != "" {
+		t.Fatalf("routingTraceCallerKey() = %q, want empty (fail closed on an empty principal)", got)
+	}
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{RoutingTrace: config.RoutingTraceConfig{
+		Mode:             config.RoutingTraceModeFull,
+		FullTraceAPIKeys: []string{"listed-key"},
+	}}, nil)
+	if mode := handler.routingTraceMode(ctx); mode != config.RoutingTraceModeSummary {
+		t.Fatalf("routingTraceMode() = %q, want summary", mode)
+	}
+}
+
+// A provider named only by a failed attempt did not serve the request.
+func TestRoutingTraceNamesProviderRequiresSuccess(t *testing.T) {
+	events := []coreexecutor.RouteEvent{
+		{Provider: "ghost", Outcome: coreexecutor.RouteOutcomeFailed},
+		{Provider: "providera", Outcome: coreexecutor.RouteOutcomeSuccess},
+	}
+	if routingTraceNamesProvider(events, "ghost") {
+		t.Fatal("a failed-only provider was treated as corroborated")
+	}
+	if !routingTraceNamesProvider(events, "providera") {
+		t.Fatal("the serving provider was not corroborated")
+	}
+}

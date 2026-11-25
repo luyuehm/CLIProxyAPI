@@ -139,13 +139,24 @@ API keys:
   error and never the attempt trail, so a free tier degrades gracefully;
 - when the list is empty, every authenticated key follows `mode`.
 
-Keys are compared verbatim against the inbound credential, extracted exactly
-the way the access layer extracts it (`Authorization: Bearer <key>`, a raw
-`Authorization: <key>`, `X-Api-Key`, `X-Goog-Api-Key`, or the `?key=` /
-`?auth_token=` query parameters). A key that authenticated through any of those
-spellings is recognised — the entitlement never depends on how the client
-happened to send its credential. Keys are never logged, echoed, or included in
-the response.
+Keys are compared verbatim against the **principal the access layer
+authenticated**, not against whatever credential happened to arrive in a
+header: several spellings can be present at once (`Authorization: Bearer <key>`,
+a raw `Authorization: <key>`, `X-Api-Key`, `X-Goog-Api-Key`, `?key=`,
+`?auth_token=`), and only the access layer knows which one it accepted. When
+the access layer authenticates without naming a principal, the request is
+treated as unlisted (summary) rather than falling through to a header. In a
+deployment that runs without an access manager (auth disabled), extraction
+mirrors the access layer's precedence: `Authorization`, `X-Goog-Api-Key`,
+`X-Api-Key`, `?key=`, `?auth_token=`.
+
+For providers whose principal is not the client key itself (a plugin or
+session-based provider may report a user id or a `sess_…` token), a list of
+literal client keys never matches. That fails closed — those callers receive
+the summary variant — so allowlist the principal value the access layer
+reports for them if they need the detailed variant.
+
+Keys are never logged, echoed, or included in the response.
 
 ```yaml
 routing-trace:
@@ -171,6 +182,17 @@ routing-trace:
   a gzip body that is not JSON is left byte-for-byte untouched.
 - **No credential material.** `provider_id` is the provider registration name;
   `auth_index` (a credential identifier) is never included.
+
+## Compatibility note
+
+`summary` is the default so a caller gets provider attribution without opting
+in. The trace is an **unknown extra top-level field** to a client that
+validates strictly against a provider schema — a Gemini client using generated
+protobuf bindings with unknown-field rejection, for example, may refuse the
+response even though the JSON is valid. If any of your consumers are strict in
+that way, set `routing-trace.mode: off` (the response body then returns to
+being byte-for-byte unchanged) and read the equivalent facts from the response
+headers instead.
 
 ## Where the numbers come from
 

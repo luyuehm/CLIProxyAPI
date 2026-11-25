@@ -258,7 +258,11 @@ func routingTraceCallerKey(ctx context.Context) string {
 	if !ok || ginCtx == nil || ginCtx.Request == nil {
 		return ""
 	}
-	if principal := routingTraceAuthenticatedPrincipal(ginCtx); principal != "" {
+	if principal, authenticated := routingTraceAuthenticatedPrincipal(ginCtx); authenticated {
+		// The request went through the access layer. Its answer is final even
+		// when the principal is empty: falling back to a header in that case
+		// would let an unauthenticated-looking header grant the detailed
+		// variant (an auth plugin may authenticate without a principal).
 		return principal
 	}
 	if token := routingTraceAuthorizationToken(ginCtx.GetHeader("Authorization")); token != "" {
@@ -284,15 +288,24 @@ func routingTraceCallerKey(ctx context.Context) string {
 // routingTraceAuthenticatedPrincipal reads the access layer's authenticated
 // principal (set as "userApiKey" by the auth middleware), which is the only
 // value that answers "which key is this request entitled under?".
-func routingTraceAuthenticatedPrincipal(ginCtx *gin.Context) string {
+//
+// authenticated reports whether the auth middleware ran at all. An empty
+// principal with authenticated=true means the layer accepted the request
+// without naming a principal; that must NOT fall through to header extraction,
+// or a listed key in an unauthenticated header would grant the detailed
+// variant.
+func routingTraceAuthenticatedPrincipal(ginCtx *gin.Context) (principal string, authenticated bool) {
 	if ginCtx == nil {
-		return ""
+		return "", false
 	}
 	value, exists := ginCtx.Get("userApiKey")
-	if !exists || value == nil {
-		return ""
+	if !exists {
+		return "", false
 	}
-	return strings.TrimSpace(fmt.Sprint(value))
+	if value == nil {
+		return "", true
+	}
+	return strings.TrimSpace(fmt.Sprint(value)), true
 }
 
 // routingTraceAuthorizationToken mirrors the access layer's bearer parsing: a
@@ -485,11 +498,16 @@ func routingTraceEngineSwitch(state *fallbackOutcomeState) (provider, from, reas
 	return provider, "", "", false
 }
 
-// routingTraceNamesProvider reports whether any route event names the given
-// provider (case-insensitively). It is the corroboration test used before an
-// engine-provided provider name is allowed to override the event-derived one.
+// routingTraceNamesProvider reports whether a SUCCESSFUL route event names the
+// given provider (case-insensitively). It is the corroboration test used
+// before an engine-provided provider name is allowed to override the
+// event-derived one: a provider mentioned only by a failed attempt did not
+// serve the request, so it must not become provider_id.
 func routingTraceNamesProvider(events []coreexecutor.RouteEvent, provider string) bool {
 	for _, event := range events {
+		if event.Outcome != coreexecutor.RouteOutcomeSuccess {
+			continue
+		}
 		if event.Provider != "" && strings.EqualFold(event.Provider, provider) {
 			return true
 		}
