@@ -144,6 +144,9 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if routeInfoCollector != nil && routeInfoDebugEnabled(ctx) {
 		body = routeInfoCollector.InjectIntoJSON(ctx, body)
 	}
+	if routingTraceRequested(entryProtocol, execOptions) {
+		body = h.attachRoutingTrace(ctx, body, routeInfoCollector, fallbackState)
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -243,6 +246,9 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
 	responseHeaders = fallbackState.attachToHeaders(responseHeaders)
 	routeInfoCollector.logFallbackIfAny()
+	// Count-token responses stay byte-for-byte unchanged: routing_trace is a
+	// completion-response contract (RIC-3275) and a token counter is not a
+	// routing audit surface.
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -303,6 +309,9 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, execCtx)
 	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
 	routeInfoCollector.logFallbackIfAny()
+	if routingTraceRequested(entryProtocol, execOptions) {
+		body = h.attachRoutingTrace(execCtx, body, routeInfoCollector, nil)
+	}
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -349,6 +358,8 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	responseHeaders = attachOpenRouterRouteToHeaders(responseHeaders, routeInfoCollector, ctx)
 	responseHeaders = attachOpenRouterFallback(responseHeaders, routeInfoCollector)
 	routeInfoCollector.logFallbackIfAny()
+	// Count-token responses stay byte-for-byte unchanged (see the note on the
+	// AuthManager count path).
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

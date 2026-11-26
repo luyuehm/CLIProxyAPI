@@ -4,6 +4,11 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import (
+	"fmt"
+	"strings"
+)
+
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
@@ -64,12 +69,82 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+
+	// RoutingTrace configures the routing_trace object attached to non-streaming
+	// responses (RIC-3275, OPENROUT-001): which provider actually served the
+	// request, whether a fallback switched it, and why.
+	RoutingTrace RoutingTraceConfig `yaml:"routing-trace" json:"routing-trace"`
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.
 type ClaudeCodeConfig struct {
 	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
 	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+}
+
+// Routing trace detail levels (RFC 2119 wording in docs/routing-trace.md).
+const (
+	// RoutingTraceModeOff attaches no routing_trace field at all.
+	RoutingTraceModeOff = "off"
+	// RoutingTraceModeSummary is the default: provider_id, model, fallback_used
+	// and switch_reason only — a bounded payload for every caller.
+	RoutingTraceModeSummary = "summary"
+	// RoutingTraceModeFull additionally discloses candidates, decision_path,
+	// attempts (the failed-attempt trail) and latency_ms.
+	RoutingTraceModeFull = "full"
+)
+
+// DefaultRoutingTraceMode is the mode used when the config block is absent or
+// its mode is empty. The summary variant carries enough to answer "which
+// provider served this request, and did a fallback switch it?" while keeping
+// the response payload small, so the trace is on by default.
+const DefaultRoutingTraceMode = RoutingTraceModeSummary
+
+// RoutingTraceConfig configures the routing_trace response object.
+//
+// The trace is an additive top-level `metadata.routing_trace` object in a
+// non-streaming JSON response body; it never changes status codes or error
+// bodies, and it does not alter streaming responses (which keep the existing
+// X-OpenRouter-Route / X-OpenRouter-Fallback / X-Fallback-Reason headers).
+type RoutingTraceConfig struct {
+	// Mode selects the disclosure level: "off", "summary" (default) or "full".
+	// An unknown value is rejected at config load time.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+
+	// FullTraceAPIKeys narrows "full" mode to the listed client API keys.
+	// When non-empty, a key that is not listed receives the summary variant, so
+	// a free-tier key can be kept on the smaller payload while paid keys get the
+	// detailed attempt trail. Empty means every authenticated key follows Mode.
+	//
+	// Keys are compared verbatim against the inbound Authorization: Bearer,
+	// X-Api-Key or X-Goog-Api-Key credential; they are never logged or echoed.
+	FullTraceAPIKeys []string `yaml:"full-trace-api-keys,omitempty" json:"full-trace-api-keys,omitempty"`
+}
+
+// NormalizedMode returns the configured mode with the default applied. An
+// unknown value falls back to the default so a runtime snapshot can never
+// break response rendering; config loading rejects unknown values up front.
+func (c RoutingTraceConfig) NormalizedMode() string {
+	switch mode := normalizeRoutingTraceMode(c.Mode); mode {
+	case RoutingTraceModeOff, RoutingTraceModeSummary, RoutingTraceModeFull:
+		return mode
+	default:
+		return DefaultRoutingTraceMode
+	}
+}
+
+// Validate rejects an unknown mode at config load time.
+func (c RoutingTraceConfig) Validate() error {
+	switch mode := normalizeRoutingTraceMode(c.Mode); mode {
+	case "", RoutingTraceModeOff, RoutingTraceModeSummary, RoutingTraceModeFull:
+		return nil
+	default:
+		return fmt.Errorf("routing-trace.mode %q is invalid: use %q, %q or %q", c.Mode, RoutingTraceModeOff, RoutingTraceModeSummary, RoutingTraceModeFull)
+	}
+}
+
+func normalizeRoutingTraceMode(mode string) string {
+	return strings.ToLower(strings.TrimSpace(mode))
 }
 
 // StreamingConfig holds server streaming behavior configuration.

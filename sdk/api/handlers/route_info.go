@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -67,6 +68,7 @@ type RouteInfoCollector struct {
 	candidates   []string
 	routerRouted bool
 	model        string
+	startedAt    time.Time
 	events       []coreexecutor.RouteEvent
 }
 
@@ -80,7 +82,7 @@ func NewRouteInfoCollector(candidates []string, routerRouted bool) *RouteInfoCol
 // NewRouteInfoCollectorWithModel builds a collector for one request and keeps
 // the normalized model as a fallback when no route event carries a model.
 func NewRouteInfoCollectorWithModel(candidates []string, routerRouted bool, model string) *RouteInfoCollector {
-	return &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted, model: model}
+	return &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted, model: model, startedAt: time.Now()}
 }
 
 // ReportEvent records one routing attempt. Safe for concurrent use.
