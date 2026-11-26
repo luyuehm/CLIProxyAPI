@@ -26,6 +26,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/proxy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/shadow"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -57,6 +58,9 @@ type Server struct {
 
 	// shadowHandler serves the enterprise shadow evaluation and canary control API.
 	shadowHandler *shadow.APIHandler
+
+	// streamResume retains resumable SSE sessions for breakpoint resume (RIC-3317).
+	streamResume *proxy.Registry
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
@@ -200,6 +204,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		envManagementSecret: envManagementSecret,
 		wsRoutes:            make(map[string]struct{}),
 		pluginHost:          optionState.pluginHost,
+		streamResume:        proxy.NewRegistry(proxy.RegistryOptions{}),
 
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 		contentFilterExportHandler:   optionState.contentFilterExportHandler,
@@ -460,6 +465,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 	if s.shadowHandler != nil {
 		s.shadowHandler.Stop()
+	}
+	if s.streamResume != nil {
+		s.streamResume.Close()
 	}
 	if errShutdown != nil {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", errShutdown)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api/middleware"
 	claudemodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/claude/models"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/models"
@@ -61,10 +62,11 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	resume := middleware.StreamResume(s.streamResume)
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
-		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
-		v1.POST("/completions", openaiHandlers.Completions)
+		v1.POST("/chat/completions", resume, openaiHandlers.ChatCompletions)
+		v1.POST("/completions", resume, openaiHandlers.Completions)
 		v1.POST("/images/generations", openaiHandlers.ImagesGenerations)
 		v1.POST("/images/edits", openaiHandlers.ImagesEdits)
 		v1.POST("/videos", openaiHandlers.XAIVideosGenerations)
@@ -72,10 +74,10 @@ func (s *Server) setupRoutes() {
 		v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
 		v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
 		v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
-		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+		v1.POST("/messages", resume, claudeCodeHandlers.ClaudeMessages)
 		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
-		v1.POST("/responses", openaiResponsesHandlers.Responses)
+		v1.POST("/responses", resume, openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		v1.POST("/alpha/search", s.codexAlphaSearch)
 		v1.POST("/live", s.codexLiveHandler.Handle)
