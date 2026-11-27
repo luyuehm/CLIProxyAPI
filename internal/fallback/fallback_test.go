@@ -50,6 +50,8 @@ func itoa(n int) string {
 
 func boolPtr(b bool) *bool { return &b }
 
+func boolPtrFloat(f float64) *float64 { return &f }
+
 // Scenario 1: preferred provider 503 → auto-forward to B → 200, and the log
 // record carries fallback_reason=provider_A_503.
 func TestScenario1PreferredFailureFallsBack(t *testing.T) {
@@ -138,6 +140,60 @@ func TestScenario3CostLimitIsHard(t *testing.T) {
 	}
 	if len(out.Fallbacks) == 0 || !strings.Contains(out.Fallbacks[0].Reason, "cost_limit_exceeded") {
 		t.Fatalf("records = %+v, want a cost_limit_exceeded record", out.Fallbacks)
+	}
+}
+
+// Scenario 3b (RIC-3352): a request-level cost ceiling (the OpenRouter
+// max_price object, converted to a per-request USD limit) tightens the
+// configured limit for the run. It can only lower the effective ceiling,
+// never raise it, so a client preference cannot loosen an operator cap.
+func TestRequestLevelCostLimitTightensOnly(t *testing.T) {
+	// Policy has no configured limit; the request supplies 0.02. A (0.05) is
+	// over the request ceiling, B (0.01) is under it → B is served.
+	exec := &fakeExec{}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A", CostUSD: 0.05},
+			{Provider: "B", CostUSD: 0.01},
+		},
+	}
+	o := fallback.NewOrchestrator(policy, nil)
+	out := o.Run(context.Background(), "model-x",
+		fallback.RequestOptions{CostLimit: boolPtrFloat(0.02)}, exec.run)
+	if !out.Success || out.Provider != "B" {
+		t.Fatalf("outcome = %+v, want success on B under the request ceiling", out)
+	}
+
+	// A request ceiling above the operator's configured cap must not raise
+	// it: with a configured 0.03 cap the request's 0.05 is ignored and A
+	// (0.05) is still excluded; B is served.
+	policy2 := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A", CostUSD: 0.05},
+			{Provider: "B", CostUSD: 0.01},
+		},
+		CostLimit: 0.03,
+	}
+	o2 := fallback.NewOrchestrator(policy2, nil)
+	out2 := o2.Run(context.Background(), "model-x",
+		fallback.RequestOptions{CostLimit: boolPtrFloat(0.05)}, exec.run)
+	if !out2.Success || out2.Provider != "B" {
+		t.Fatalf("outcome = %+v, want success on B (request cap ignored, policy 0.03 holds)", out2)
+	}
+
+	// A request ceiling that would exclude every candidate makes the run
+	// terminal, executing nothing.
+	policy3 := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A", CostUSD: 0.05},
+			{Provider: "B", CostUSD: 0.06},
+		},
+	}
+	o3 := fallback.NewOrchestrator(policy3, nil)
+	out3 := o3.Run(context.Background(), "model-x",
+		fallback.RequestOptions{CostLimit: boolPtrFloat(0.01)}, exec.run)
+	if out3.Success || !errors.Is(out3.Err, fallback.ErrCostLimitExceeded) {
+		t.Fatalf("outcome = %+v, want ErrCostLimitExceeded (request ceiling excluded all)", out3)
 	}
 }
 

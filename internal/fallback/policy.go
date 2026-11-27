@@ -60,12 +60,29 @@ type RequestOptions struct {
 	// chain; false attempts only the preferred candidate and returns its
 	// error as-is, even when the policy configures a full fallback chain.
 	Fallback *bool
+	// CostLimit is a request-level override of Policy.CostLimit (the
+	// OpenRouter max_price object, converted to the per-request USD
+	// ceiling). nil keeps the policy's configured limit.
+	CostLimit *float64
 }
 
 // FallbackEnabled reports the effective request-level switch. A nil switch
 // means "enabled" (follow the global chain).
 func (o RequestOptions) FallbackEnabled() bool {
 	return o.Fallback == nil || *o.Fallback
+}
+
+// EffectiveCostLimit reports the per-run cost ceiling: the request override
+// when it is set and positive, otherwise the policy's configured limit.
+// (A name-collision-safe helper kept off the field so a *float64 field can
+// also carry the value.)
+func (o RequestOptions) EffectiveCostLimit(policyLimit float64) float64 {
+	if o.CostLimit != nil && *o.CostLimit > 0 {
+		if policyLimit == 0 || *o.CostLimit < policyLimit {
+			return *o.CostLimit
+		}
+	}
+	return policyLimit
 }
 
 // Sentinel errors carry stable codes for logs, metrics, and status

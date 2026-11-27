@@ -111,6 +111,78 @@ func traceOf(t *testing.T, body []byte) map[string]any {
 	return trace
 }
 
+// AC1 (RIC-3352): a request whose provider object narrows the pool and sets a
+// max_price renders both in routing_trace.provider_prefs_applied; an unknown
+// future key is recorded in provider_prefs_ignored with its reason code, and
+// the request still succeeds (no 400/500).
+func TestRoutingTraceProviderPrefsRendered(t *testing.T) {
+	const model = "trace-model-prefs"
+	providerA := &routingTraceExecutor{provider: "providera"}
+	providerB := &routingTraceExecutor{provider: "providerb"}
+	handler := newRoutingTraceHandler(t, model, &sdkconfig.SDKConfig{}, []*routingTraceExecutor{providerA, providerB})
+
+	body := `{"model":"` + model + `","provider":{"only":["providera"],"max_price":{"prompt":1},"future_key":1}}`
+	out, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai", model, []byte(body), "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	trace := traceOf(t, out)
+
+	applied, ok := trace["provider_prefs_applied"].([]any)
+	if !ok {
+		t.Fatalf("provider_prefs_applied missing or not a list: %v", trace)
+	}
+	appliedNames := make(map[string]bool, len(applied))
+	for _, item := range applied {
+		appliedNames[item.(map[string]any)["name"].(string)] = true
+	}
+	if !appliedNames["only"] || !appliedNames["max_price"] {
+		t.Fatalf("provider_prefs_applied = %v, want it to name only + max_price", applied)
+	}
+
+	ignored, ok := trace["provider_prefs_ignored"].([]any)
+	if !ok {
+		t.Fatalf("provider_prefs_ignored missing or not a list: %v", trace)
+	}
+	var sawFuture bool
+	for _, item := range ignored {
+		field := item.(map[string]any)
+		if field["name"] == "future_key" && field["reason"] == "unknown_field:future_key" {
+			sawFuture = true
+		}
+	}
+	if !sawFuture {
+		t.Fatalf("provider_prefs_ignored = %v, want the unknown field with its reason code", ignored)
+	}
+
+	// The serving provider is the one the preference pinned.
+	if trace["provider_id"] != "providera" {
+		t.Fatalf("provider_id = %v, want providera (only:[providera])", trace["provider_id"])
+	}
+}
+
+// AC5 (RIC-3352): a request without a provider object renders a trace with no
+// provider_prefs_* fields at all — byte-identical to the pre-S2 shape, so a
+// strict consumer never sees the new keys it did not ask for.
+func TestRoutingTraceNoProviderObjectOmitsPrefs(t *testing.T) {
+	const model = "trace-model-no-prefs"
+	providerA := &routingTraceExecutor{provider: "providera"}
+	providerB := &routingTraceExecutor{provider: "providerb"}
+	handler := newRoutingTraceHandler(t, model, &sdkconfig.SDKConfig{}, []*routingTraceExecutor{providerA, providerB})
+
+	out, _, errMsg := handler.ExecuteWithAuthManager(context.Background(), "openai", model, []byte(`{"model":"`+model+`"}`), "")
+	if errMsg != nil {
+		t.Fatalf("ExecuteWithAuthManager() error = %+v", errMsg)
+	}
+	trace := traceOf(t, out)
+	if _, present := trace["provider_prefs_applied"]; present {
+		t.Fatalf("no-prefs trace must omit provider_prefs_applied: %v", trace)
+	}
+	if _, present := trace["provider_prefs_ignored"]; present {
+		t.Fatalf("no-prefs trace must omit provider_prefs_ignored: %v", trace)
+	}
+}
+
 // AC1: a healthy request with no fallback reports the serving provider.
 func TestRoutingTraceAC1DirectSuccessReportsProvider(t *testing.T) {
 	const model = "trace-model-ac1"

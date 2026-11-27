@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallback"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -63,6 +64,18 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
+	// RIC-3352: apply the request-level provider object (OpenRouter provider
+	// prefs) on the boundary-narrowed pool. A nil record (no provider object)
+	// leaves the pool and the configured fallback chain untouched.
+	prefsRec := h.applyProviderPreferences(ctx, providers, rawJSON, normalizedModel)
+	if prefsRec != nil {
+		providers = prefsRec.pool
+		if prefsRec.violation != nil {
+			// The KEEPER allow-list forbids the request's provider selection:
+			// surface the boundary verdict before any upstream request is made.
+			return nil, nil, prefsRec.violation
+		}
+	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
 	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
@@ -96,6 +109,12 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	routeInfoCollector := h.newAlwaysRouteInfoCollector(providers, routeDecision.Provider != "", normalizedModel)
 	if routeInfoCollector != nil {
 		opts.Metadata[coreexecutor.RouteInfoReporterMetadataKey] = routeInfoCollector
+		// RIC-3352: thread the request-level provider-object outcome into the
+		// trace so routing_trace.provider_prefs_* renders it (no-prefs
+		// requests leave the lists nil and the fields stay omitted).
+		if prefsRec != nil {
+			routeInfoCollector.SetProviderPrefs(prefsRec.applied, prefsRec.ignored)
+		}
 	}
 	var interceptErr *interfaces.ErrorMessage
 	req, opts, interceptErr = h.applyRequestInterceptorsBeforeAuth(ctx, entryProtocol, originalRequestedModel, lifecycle.requestID(), req, opts, execOptions.SkipInterceptorPluginID)
@@ -105,7 +124,11 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 		return nil, nil, interceptErr
 	}
 	ctx = enrichContextWithSessionHierarchy(ctx, opts.Headers, req.Payload, opts.Metadata)
-	resp, fallbackState, err := h.executeWithFallback(ctx, providers, req, opts)
+	engineOpts := fallback.RequestOptions{}
+	if prefsRec != nil {
+		engineOpts = prefsRec.engineOpts
+	}
+	resp, fallbackState, err := h.executeWithFallback(ctx, providers, req, opts, engineOpts)
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		// RIC-2532-A: when the request ran inside a KEEPER route boundary

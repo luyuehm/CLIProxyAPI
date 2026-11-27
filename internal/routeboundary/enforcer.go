@@ -310,6 +310,85 @@ func (e *Enforcer) TranslateExecutionError(ctx context.Context, execErr error, m
 	return e.noProviderViolation(modelName)
 }
 
+// BoundaryFor returns the caller's effective delivered provider allow-list and
+// whether a boundary is in force, as plain values (the handler's
+// RouteBoundaryGate interface shape, so it can be faked without this package
+// importing handlers). A request-level provider preference narrows the
+// candidate pool against this allow-list but never widens it
+// (RIC-3352 security-priority rule). The enforcer remains the single decider
+// of the 403/503 verdict; this helper only exposes the boundary it will
+// enforce.
+func (e *Enforcer) BoundaryFor(ctx context.Context) ([]string, bool) {
+	if e == nil || e.store == nil {
+		return nil, false
+	}
+	if !e.store.Verified() {
+		return nil, false
+	}
+	key := apiKeyFromGin(ginContext(ctx))
+	if key == "" {
+		return nil, false
+	}
+	boundary, ok := e.store.Get(key)
+	if !ok || !boundary.Constrains() {
+		return nil, false
+	}
+	return boundary.AllowedProviders, true
+}
+
+// ProviderPrefsViolation returns the 403/503 route_boundary_violation verdict
+// for a request-level provider preference that the KEEPER boundary forbids
+// (RIC-3352). outside lists the client-named providers (the provider object's
+// only/order entries) that are not in this caller's allow-list: when
+// non-empty the verdict is a 403 "provider preference <names> is not within
+// the route boundary" (an explicit out-of-boundary selection, the same class
+// as ?alt / X-OpenRouter-Provider); when empty the pool was narrowed to
+// nothing for a non-explicit reason, which is the scenario-2 503 "no provider
+// within route boundary is available". The caller is responsible for calling
+// this only when a boundary is in force and the preference narrowed the pool
+// to empty; it reuses this enforcer's verdict builder so the body and
+// headers match the enforcer's own verdicts exactly (no fourth semantics).
+func (e *Enforcer) ProviderPrefsViolation(ctx context.Context, outside []string, modelName string) *interfaces.ErrorMessage {
+	if e == nil {
+		return nil
+	}
+	// Only meaningful when a boundary actually constrains this caller.
+	key := apiKeyFromGin(ginContext(ctx))
+	boundary, ok := e.store.Get(key)
+	if !ok || !boundary.Constrains() {
+		return nil
+	}
+	allow := make(map[string]struct{}, len(boundary.AllowedProviders))
+	for _, p := range boundary.AllowedProviders {
+		allow[normalizeProvider(p)] = struct{}{}
+	}
+	names := make([]string, 0, len(outside))
+	for _, p := range outside {
+		key := normalizeProvider(p)
+		if key == "" {
+			continue
+		}
+		if _, in := allow[key]; !in {
+			names = append(names, key)
+		}
+	}
+	if len(names) > 0 {
+		// Dedup, stable.
+		seen := make(map[string]struct{}, len(names))
+		deduped := make([]string, 0, len(names))
+		for _, n := range names {
+			if _, done := seen[n]; done {
+				continue
+			}
+			seen[n] = struct{}{}
+			deduped = append(deduped, n)
+		}
+		return e.violation(http.StatusForbidden,
+			"provider preference "+strings.Join(deduped, ",")+" is not within the configured route boundary")
+	}
+	return e.noProviderViolation(modelName)
+}
+
 // constrainedMarkerSet reports whether this request was admitted to a
 // boundary-constrained execution by ApplyBoundary.
 func constrainedMarkerSet(ginCtx *gin.Context) bool {
@@ -587,4 +666,24 @@ func violationBody(message string) []byte {
 		out = []byte(`{"error":{"code":"` + ErrorType + `","type":"` + ErrorType + `","message":""}}`)
 	}
 	return out
+}
+
+// BuildViolationError returns the contract-pinned route_boundary_violation
+// error for a 403/503 verdict. It is the single source of truth shared by
+// the enforcer's own verdicts and the handler-side request-level provider
+// preference path (RIC-3352), so a preference that is blocked by the KEEPER
+// allow-list produces the exact same body and headers as a direct boundary
+// violation. The caller supplies the HTTP status (403 for an explicit
+// out-of-boundary selection, 503 for an empty in-boundary pool) and a
+// gateway-built message.
+func BuildViolationError(status int, message string) *interfaces.ErrorMessage {
+	headers := make(http.Header)
+	headers.Set(HeaderPolicyApplied, "true")
+	return &interfaces.ErrorMessage{
+		StatusCode:     status,
+		DirectResponse: true,
+		Body:           violationBody(message),
+		Headers:        headers,
+		Error:          errors.New("route boundary violation: " + message),
+	}
 }

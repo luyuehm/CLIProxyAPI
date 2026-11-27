@@ -398,6 +398,15 @@ func (b *Builder) Build() (*Service, error) {
 	if fbOpt := fallbackruntime.ServerOption(b.cfg); fbOpt != nil {
 		service.serverOptions = append(service.serverOptions, fbOpt)
 	}
+	// RIC-3352: in-process provider-latency window for request-level provider
+	// preferences (OpenRouter provider object sort:"latency" /
+	// preferred_max_latency). Installed after the fallback engine so the
+	// bridge (if present) is its attempt-latency source. Disabled by default:
+	// an unconfigured build measures nothing and a latency sort degrades to
+	// the static order, recorded in routing_trace — never blocked.
+	if ppOpt := fallbackruntime.ProviderPrefsOption(b.cfg); ppOpt != nil {
+		service.serverOptions = append(service.serverOptions, ppOpt)
+	}
 	return service, nil
 }
 
