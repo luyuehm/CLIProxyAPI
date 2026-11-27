@@ -211,7 +211,7 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 		// Commit to c: flush the switch that moved us here, then (in dry-run)
 		// stop before executing.
 		if i > 0 {
-			o.flushSwitch(&outcome, pendingFrom, c, pendingEvent, start, now, log)
+			o.flushSwitch(&outcome, pendingFrom, c, requestedModel, pendingEvent, start, now, log)
 		}
 		if o.dryRun {
 			outcome.Planned = true
@@ -294,7 +294,14 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 // flushSwitch records the move from `from` to `to`, justified by event (the
 // failure or health skip on `from`). It takes the resolved clock and logger
 // so a zero-value orchestrator stays race-free under concurrent Run.
-func (o *Orchestrator) flushSwitch(outcome *Outcome, from, to Candidate, event error, start time.Time, now func() time.Time, log *logrus.Entry) {
+//
+// requestedModel resolves the target model on the log line: the candidate's
+// override when set, otherwise the model the caller asked for (kept across
+// the switch). fallback_triggered is the explicit "a switch happened" marker
+// so a single field answers "did this request degrade?" without inferring it
+// from the from/to pair; logrus stamps the event time, and reason carries the
+// bounded cause code.
+func (o *Orchestrator) flushSwitch(outcome *Outcome, from, to Candidate, requestedModel string, event error, start time.Time, now func() time.Time, log *logrus.Entry) {
 	reason, detail := "", "switch"
 	if event != nil {
 		reason = reasonCode(event, from.Provider)
@@ -309,10 +316,16 @@ func (o *Orchestrator) flushSwitch(outcome *Outcome, from, to Candidate, event e
 		At:           now(),
 	}
 	outcome.Fallbacks = append(outcome.Fallbacks, record)
+	targetModel := requestedModel
+	if to.Model != "" {
+		targetModel = to.Model
+	}
 	log.WithFields(logrus.Fields{
-		"fallback_from": record.From,
-		"fallback_to":   record.To,
-		"reason":        record.Reason,
+		"fallback_triggered": true,
+		"fallback_from":      record.From,
+		"fallback_to":        record.To,
+		"fallback_model":     targetModel,
+		"reason":             record.Reason,
 	}).Info("fallback: switching provider")
 }
 

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallback"
 )
 
@@ -593,4 +595,141 @@ func reasonOf(err error) string {
 		return pe.Reason()
 	}
 	return err.Error()
+}
+
+// captureHook keeps every log entry an orchestrator emits so the switching
+// log contract can be asserted against a real logger instead of a mock.
+type captureHook struct {
+	entries []*logrus.Entry
+}
+
+func (h *captureHook) Levels() []logrus.Level { return logrus.AllLevels }
+
+func (h *captureHook) Fire(entry *logrus.Entry) error {
+	// Dup keeps Data/Time but resets Message, so carry it over explicitly.
+	dup := entry.Dup()
+	dup.Message = entry.Message
+	h.entries = append(h.entries, dup)
+	return nil
+}
+
+// loggedOrchestrator builds an orchestrator whose structured log is captured.
+func loggedOrchestrator(policy fallback.Policy) (*fallback.Orchestrator, *captureHook) {
+	logger := logrus.New()
+	hook := &captureHook{}
+	logger.AddHook(hook)
+	o := fallback.NewOrchestrator(policy, nil)
+	o.SetLogger(logrus.NewEntry(logger))
+	return o, hook
+}
+
+// switchEntries returns the "fallback: switching provider" log lines.
+func (h *captureHook) switchEntries() []*logrus.Entry {
+	var out []*logrus.Entry
+	for _, e := range h.entries {
+		if e.Message == "fallback: switching provider" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// AC1's log contract: a real switch emits fallback_triggered=true with the
+// source, target, target model, and bounded reason, and logrus stamps the
+// event time — the four facts the acceptance criterion names.
+func TestFallbackSwitchLogCarriesTriggeredContract(t *testing.T) {
+	exec := &fakeExec{errors: map[string]error{"A": httpErr("A", 503)}}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"},
+			{Provider: "B"},
+		},
+	}
+	o, hook := loggedOrchestrator(policy)
+	out := o.Run(context.Background(), "model-x", fallback.RequestOptions{}, exec.run)
+	if !out.Success || out.Provider != "B" {
+		t.Fatalf("outcome provider = %q success=%v, want B: %v", out.Provider, out.Success, out.Err)
+	}
+
+	switches := hook.switchEntries()
+	if len(switches) != 1 {
+		t.Fatalf("switch log entries = %d, want 1", len(switches))
+	}
+	entry := switches[0]
+	if got, ok := entry.Data["fallback_triggered"].(bool); !ok || !got {
+		t.Fatalf("fallback_triggered = %v, want true", entry.Data["fallback_triggered"])
+	}
+	if got := entry.Data["fallback_from"]; got != "A" {
+		t.Fatalf("fallback_from = %v, want A", got)
+	}
+	if got := entry.Data["fallback_to"]; got != "B" {
+		t.Fatalf("fallback_to = %v, want B", got)
+	}
+	if got := entry.Data["fallback_model"]; got != "model-x" {
+		t.Fatalf("fallback_model = %v, want model-x (request model kept)", got)
+	}
+	if got := entry.Data["reason"]; got != "provider_A_503" {
+		t.Fatalf("reason = %v, want provider_A_503", got)
+	}
+	if entry.Time.IsZero() {
+		t.Fatal("switch log entry has no timestamp")
+	}
+}
+
+// The logged target model follows a candidate override, not the requested
+// model, so the log names what actually runs on the backup provider.
+func TestFallbackSwitchLogTargetModelFollowsOverride(t *testing.T) {
+	exec := &fakeExec{errors: map[string]error{"A": httpErr("A", 503)}}
+	policy := fallback.Policy{
+		Candidates: []fallback.Candidate{
+			{Provider: "A"},
+			{Provider: "B", Model: "cheap-x"},
+		},
+	}
+	o, hook := loggedOrchestrator(policy)
+	if out := o.Run(context.Background(), "model-x", fallback.RequestOptions{}, exec.run); !out.Success {
+		t.Fatalf("outcome failed: %v", out.Err)
+	}
+	switches := hook.switchEntries()
+	if len(switches) != 1 {
+		t.Fatalf("switch log entries = %d, want 1", len(switches))
+	}
+	if got := switches[0].Data["fallback_model"]; got != "cheap-x" {
+		t.Fatalf("fallback_model = %v, want cheap-x", got)
+	}
+}
+
+// AC2's log contract: both failed attempts are recorded, the chain terminates
+// after one pass (no unbounded retry), and no switch is logged for a chain
+// that never reached a later candidate.
+func TestExhaustedChainLogsEveryAttemptOnce(t *testing.T) {
+	exec := &fakeExec{errors: map[string]error{
+		"A": httpErr("A", 503),
+		"B": httpErr("B", 504),
+	}}
+	policy := fallback.Policy{Candidates: []fallback.Candidate{{Provider: "A"}, {Provider: "B"}}}
+	o, hook := loggedOrchestrator(policy)
+	out := o.Run(context.Background(), "model-x", fallback.RequestOptions{}, exec.run)
+	if out.Success {
+		t.Fatal("outcome.Success = true, want false for an exhausted chain")
+	}
+	if exec.executed != 2 {
+		t.Fatalf("executed = %d, want 2 (one attempt per candidate, no retry)", exec.executed)
+	}
+
+	failedProviders := map[string]int{}
+	for _, e := range hook.entries {
+		if e.Message == "fallback: provider attempt failed" {
+			if p, ok := e.Data["provider"].(string); ok {
+				failedProviders[p]++
+			}
+		}
+	}
+	if failedProviders["A"] != 1 || failedProviders["B"] != 1 {
+		t.Fatalf("failed attempt log counts = %v, want A:1 B:1", failedProviders)
+	}
+	// Entering B is one committed switch; the terminal record is not a switch.
+	if switches := hook.switchEntries(); len(switches) != 1 {
+		t.Fatalf("switch log entries = %d, want 1 (A→B only)", len(switches))
+	}
 }
