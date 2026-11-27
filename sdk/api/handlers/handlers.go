@@ -357,6 +357,11 @@ type BaseAPIHandler struct {
 	// provider fallback engine (RIC-3143). Nil leaves the gateway's existing
 	// credential-level failover as the only behavior.
 	FallbackBridge *fallbackBridge
+
+	// ModelRoutingGate optionally resolves the request-level model routing
+	// strategy and picks the model to execute (RIC-3351). Nil leaves model
+	// resolution exactly as before (the default build).
+	ModelRoutingGate ModelRoutingGate
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.

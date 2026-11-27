@@ -314,6 +314,18 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	if !preparedRoute {
 		routeDecision = h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, true, execOptions)
 	}
+	// RIC-3351: apply the request-level model routing strategy on the plain
+	// model-to-provider path. A nil gate (the default build) is a no-op.
+	if shouldApplyModelRouting(routeDecision, execOptions) {
+		routedModel, routingErr := h.applyModelRouting(ctx, entryProtocol, rawJSON, modelName, allowImageModel)
+		if routingErr != nil {
+			errChan := make(chan *interfaces.ErrorMessage, 1)
+			errChan <- routingErr
+			close(errChan)
+			return nil, nil, errChan
+		}
+		modelName = routedModel
+	}
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)

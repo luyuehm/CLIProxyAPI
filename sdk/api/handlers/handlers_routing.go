@@ -275,6 +275,19 @@ func isOpenAIImageOnlyModel(model string) bool {
 	}
 }
 
+// isVideoOnlyModel reports whether model names a video-generation model. Those
+// are served only by the /v1/videos endpoints; dispatching one as a chat model
+// (or routing a chat request onto one) would send an unusable request upstream.
+//
+// The match is a family prefix ("grok-imagine-video", and any future
+// revision such as -1.5 / -1.5-preview) rather than an exact list, so a new
+// video revision cannot slip through as a text model the way the image-only
+// exact list would allow.
+func isVideoOnlyModel(model string) bool {
+	base := strings.ToLower(strings.TrimSpace(routeModelBaseName(model)))
+	return strings.HasPrefix(base, "grok-imagine-video") || strings.Contains(base, "video")
+}
+
 func routeModelBaseName(model string) string {
 	model = strings.TrimSpace(model)
 	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {

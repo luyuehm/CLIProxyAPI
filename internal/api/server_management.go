@@ -134,6 +134,19 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/routing/strategy", s.mgmt.GetRoutingStrategy)
 		mgmt.PUT("/routing/strategy", s.mgmt.PutRoutingStrategy)
 		mgmt.PATCH("/routing/strategy", s.mgmt.PutRoutingStrategy)
+		// RIC-3351: request-level model routing strategy objects
+		// (internal/modelrouting). They are appended next to the
+		// credential-level /routing/strategy switch above; the two control
+		// different things (that one is round-robin / weighted / fill-first
+		// credential selection, this one is the per-scope cost/quality
+		// strategy the decision engine enforces). Mounted only when the
+		// channel is enabled, so a default build exposes no new route.
+		if s.modelRoutingGetPolicies != nil {
+			mgmt.GET("/routing/policies", s.modelRoutingGetPolicies)
+		}
+		if s.modelRoutingPostPolicies != nil {
+			mgmt.POST("/routing/policies", s.modelRoutingPostPolicies)
+		}
 
 		mgmt.GET("/claude-api-key", s.mgmt.GetClaudeKeys)
 		mgmt.PUT("/claude-api-key", s.mgmt.PutClaudeKeys)

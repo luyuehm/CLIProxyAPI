@@ -45,6 +45,15 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
 	originalRequestedModel := modelName
 	routeDecision := h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, false, execOptions)
+	// RIC-3351: apply the request-level model routing strategy on the plain
+	// model-to-provider path. A nil gate (the default build) is a no-op.
+	if shouldApplyModelRouting(routeDecision, execOptions) {
+		routedModel, routingErr := h.applyModelRouting(ctx, entryProtocol, rawJSON, modelName, allowImageModel)
+		if routingErr != nil {
+			return nil, nil, routingErr
+		}
+		modelName = routedModel
+	}
 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
 		return nil, nil, errMsg
@@ -162,6 +171,15 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	routeDecision := h.applyModelRouter(ctx, handlerType, modelName, rawJSON, false, execOptions)
 	if routeDecision.ExecutorPluginID != "" {
 		return h.countWithPluginExecutor(ctx, handlerType, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
+	}
+	// RIC-3351: apply the request-level model routing strategy on the plain
+	// model-to-provider path. A nil gate (the default build) is a no-op.
+	if shouldApplyModelRouting(routeDecision, execOptions) {
+		routedModel, routingErr := h.applyModelRouting(ctx, handlerType, rawJSON, modelName, false)
+		if routingErr != nil {
+			return nil, nil, routingErr
+		}
+		modelName = routedModel
 	}
 	providers, normalizedModel, errMsg := h.providersForExecution(modelName, originalRequestedModel, false, routeDecision, execOptions)
 	if errMsg != nil {
