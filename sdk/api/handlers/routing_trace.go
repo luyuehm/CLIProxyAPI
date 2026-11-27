@@ -41,6 +41,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/providerprefs"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -88,6 +89,24 @@ type routingTraceBody struct {
 	Candidates    []string              `json:"candidates,omitempty"`
 	Attempts      []routingTraceAttempt `json:"attempts,omitempty"`
 	LatencyMS     int64                 `json:"latency_ms,omitempty"`
+	// RIC-3352: the request-level provider-object outcome. Present only when
+	// the request carried a `provider` object (additive: no schema_version
+	// bump); a client that ignores unknown trace fields is unaffected.
+	ProviderPrefsApplied []providerPrefsField `json:"provider_prefs_applied,omitempty"`
+	ProviderPrefsIgnored []providerPrefsField `json:"provider_prefs_ignored,omitempty"`
+}
+
+// providerPrefsField is one preference field and its bounded status: name
+// (the OpenRouter key) plus, for an ignored field, the reason code.
+type providerPrefsField struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// routingTraceFieldToTrace converts a preference-record field into the trace
+// object shape.
+func routingTraceFieldToTrace(f providerprefs.Field) providerPrefsField {
+	return providerPrefsField{Name: f.Name, Reason: f.Reason}
 }
 
 // routingTraceRequested reports whether this execution carries the
@@ -449,6 +468,27 @@ func (c *RouteInfoCollector) buildRoutingTrace(ctx context.Context, full bool, s
 		Model:         model,
 		FallbackUsed:  fallbackUsed,
 		SwitchReason:  switchReason,
+	}
+	// RIC-3352: provider-preference observability is present in both the
+	// summary and full variants (the "不静默丢弃" rule: a dropped preference
+	// must be readable without opting into the detailed trail). It is empty
+	// — and therefore omitted by the omitempty tags — when the request had
+	// no provider object, so a no-prefs trace is byte-identical to the
+	// pre-S2 shape.
+	c.mu.Lock()
+	prefsApplied, prefsIgnored := c.providerPrefsApplied, c.providerPrefsIgnored
+	c.mu.Unlock()
+	if len(prefsApplied) > 0 {
+		trace.ProviderPrefsApplied = make([]providerPrefsField, 0, len(prefsApplied))
+		for _, f := range prefsApplied {
+			trace.ProviderPrefsApplied = append(trace.ProviderPrefsApplied, routingTraceFieldToTrace(f))
+		}
+	}
+	if len(prefsIgnored) > 0 {
+		trace.ProviderPrefsIgnored = make([]providerPrefsField, 0, len(prefsIgnored))
+		for _, f := range prefsIgnored {
+			trace.ProviderPrefsIgnored = append(trace.ProviderPrefsIgnored, routingTraceFieldToTrace(f))
+		}
 	}
 	if !full {
 		return trace, true

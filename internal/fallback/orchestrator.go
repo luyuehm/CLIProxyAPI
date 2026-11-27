@@ -136,11 +136,20 @@ func (o *Orchestrator) Run(ctx context.Context, requestedModel string, opts Requ
 	log := logEntry.WithField("component", "fallback")
 	log = log.WithField("model", requestedModel)
 
+	// runPolicy is the per-run view of the shared policy: a request-level
+	// cost ceiling (OpenRouter max_price) can only TIGHTEN the configured
+	// limit for this run, never loosen it — a client preference must not
+	// raise the operator's cap. The orchestrator is shared and its Health
+	// window is concurrency-safe, so the run policy is a value copy, not a
+	// mutation of o.Policy.
+	runPolicy := o.Policy
+	runPolicy.CostLimit = opts.EffectiveCostLimit(runPolicy.CostLimit)
+
 	// Eligibility split by mode: a full chain when fallback is enabled,
 	// the preferred candidate alone when it is disabled (B1: no promotion).
-	chain, hardErr := o.Policy.eligible()
+	chain, hardErr := runPolicy.eligible()
 	if !opts.FallbackEnabled() {
-		chain, hardErr = o.Policy.preferredEligible()
+		chain, hardErr = runPolicy.preferredEligible()
 	}
 	if hardErr != nil {
 		log.WithError(hardErr).Info("fallback: policy hard constraint")

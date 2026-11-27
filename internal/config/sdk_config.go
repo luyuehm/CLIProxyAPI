@@ -74,6 +74,34 @@ type SDKConfig struct {
 	// responses (RIC-3275, OPENROUT-001): which provider actually served the
 	// request, whether a fallback switched it, and why.
 	RoutingTrace RoutingTraceConfig `yaml:"routing-trace" json:"routing-trace"`
+
+	// ProviderPrefs configures request-level OpenRouter provider preferences
+	// (RIC-3352, OPENROUT-001-S2): parsing the top-level `provider` object and
+	// ranking the candidate pool on the in-process latency window. Disabled
+	// (or an empty block) installs no latency source and no preference
+	// parsing, so the request path is byte-identical to the default build.
+	ProviderPrefs ProviderPrefsConfig `yaml:"provider-prefs" json:"provider-prefs"`
+}
+
+// ProviderPrefsConfig configures the request-level provider-object pipeline.
+//
+// The pipeline itself (parse → boundary-narrowed pool transform → fallback
+// engine allow_fallbacks/max_price → routing_trace provider_prefs_* fields)
+// is always on — it is a pure, stateless transform that is a no-op when the
+// request carries no `provider` object. Only the in-process latency window
+// (the sort:"latency" / preferred_max_latency data source, option A in
+// docs/provider-prefs-decision.md) is gated: without it, a latency sort
+// degrades to the existing static order and is recorded as
+// latency_source_empty in routing_trace, never blocked.
+type ProviderPrefsConfig struct {
+	// Enabled installs the in-process latency window. Default false: a
+	// request whose provider object asks for a latency sort degrades and is
+	// recorded, but the gateway measures nothing.
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// Window is the sliding-window horizon for the latency samples; 5m when
+	// empty. It is how far back a provider's attempt latencies count.
+	Window string `yaml:"window,omitempty" json:"window,omitempty"`
 }
 
 // ClaudeCodeConfig configures Claude Code compatibility behavior.

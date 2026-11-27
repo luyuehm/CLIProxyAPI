@@ -10,12 +10,15 @@
 package fallbackruntime
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallback"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/providerlatency"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 )
 
@@ -66,4 +69,51 @@ func configToFallbackConfig(cfg config.FallbackConfig) fallback.Config {
 		})
 	}
 	return out
+}
+
+// ProviderPrefsOption installs the in-process provider-latency window
+// (RIC-3352 option A, docs/provider-prefs-decision.md) on the constructed
+// server through the same pre-reserved WithRouterConfigurator hook as the
+// fallback engine. It returns nil when provider-prefs is not enabled, so the
+// default build measures nothing: a request-level latency sort degrades to
+// the existing static order and is recorded as latency_source_empty in
+// routing_trace.
+//
+// The window is shared: the handler reads it for sort ranking
+// (SetProviderPrefsLatency) and the fallback bridge records each completed
+// attempt into it, so ranking is on measured, per-instance data — never a
+// live probe, so routing can never block on it (the frozen RIC-3307
+// disposition).
+func ProviderPrefsOption(cfg *config.Config) api.ServerOption {
+	if cfg == nil || !cfg.ProviderPrefs.Enabled {
+		return nil
+	}
+	window := buildProviderPrefsWindow(cfg.ProviderPrefs)
+	return api.WithRouterConfigurator(func(_ *gin.Engine, baseHandler *handlers.BaseAPIHandler, _ *config.Config) {
+		if baseHandler == nil {
+			return
+		}
+		baseHandler.SetProviderPrefsLatency(window)
+		if baseHandler.FallbackBridge != nil {
+			// The bridge is installed by ServerOption, which runs before this
+			// hook (builder order), so the recorder catches every fallback
+			// attempt's wall latency.
+			baseHandler.FallbackBridge.SetLatencyRecorder(func(provider string, totalMS int64) {
+				window.Record(provider, totalMS, time.Now())
+			})
+		}
+		logger.Info("provider-prefs: in-process latency window installed (sort:latency ranks on measured attempt latency)")
+	})
+}
+
+// buildProviderPrefsWindow builds the latency window from the config block,
+// defaulting the window horizon. The horizon is best-effort (an unparseable
+// duration keeps the default), matching the fallback backoff-duration rule:
+// a misconfigured value must not drop the whole source.
+func buildProviderPrefsWindow(cfg config.ProviderPrefsConfig) *providerlatency.Window {
+	opts := providerlatency.Options{}
+	if w, err := time.ParseDuration(cfg.Window); err == nil && w > 0 {
+		opts.Window = w
+	}
+	return providerlatency.NewWindow(opts)
 }

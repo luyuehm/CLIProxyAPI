@@ -93,6 +93,41 @@ Each `attempts` entry:
 | `status` | int | The upstream HTTP status (`0` when unknown). |
 | `reason` | string | The bounded switch reason for this attempt. |
 
+### `provider_prefs_*` (RIC-3352, additive — no `schema_version` bump)
+
+When the request carried a top-level OpenRouter `provider` object, the trace
+names what the gateway applied and what it ignored, in both the `summary` and
+`full` variants (the "no silent drop" rule: an ignored preference must be
+observable without opting into the detailed trail). A request without a
+`provider` object omits both fields entirely, so a no-prefs trace is
+byte-identical to the pre-S2 shape and `schema_version` stays `1.0`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `provider_prefs_applied` | object[] | The `provider` object fields that took effect: `{"name":"only"}`, `{"name":"sort:price"}`, `{"name":"max_price"}`, … One entry per applied field; `reason` is absent. |
+| `provider_prefs_ignored` | object[] | The `provider` object fields that did not take effect, each with a bounded machine-readable reason code: `unknown_field:<key>` (future keys never 400 the request), `not_in_pool`, `no_cost_data`, `no_latency_data`, `throughput_source_unavailable`, `partition_none_unsupported`, `ignored_not_in_pool`, `empty_intersection`, `latency_source_empty`. |
+
+Each `provider_prefs_*` entry:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string | The `provider` object field (or field:sub-key) that was applied/ignored. |
+| `reason` | string | Present only on ignored entries; the bounded code from the table above. |
+
+On `stream: true` the trace is not in the body (see Scope); the same applied /
+ignored record rides the compact response headers `X-Provider-Prefs-Applied`
+(comma-joined field names) and `X-Provider-Prefs-Ignored`
+(comma-joined `field=reason` pairs), both absent when no `provider` object was
+present.
+
+Security: a `provider` preference can only narrow the pool the KEEPER route
+boundary (RIC-2532-A) already allowed. A request whose `only`/`order`
+selection names a provider outside the caller's allow-list, or narrows the
+in-boundary pool to nothing, is rejected before any upstream request with the
+boundary's `route_boundary_violation` (403 for an explicitly named
+out-of-boundary provider, 503 when no in-boundary provider remains) — the
+client can never widen its boundary through a preference.
+
 ## `switch_reason` vocabulary
 
 Consumers branch on these values, so the vocabulary is deliberately small and

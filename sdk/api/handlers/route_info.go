@@ -16,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/providerprefs"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"golang.org/x/net/context"
 )
@@ -70,6 +71,13 @@ type RouteInfoCollector struct {
 	model        string
 	startedAt    time.Time
 	events       []coreexecutor.RouteEvent
+	// providerPrefsApplied / providerPrefsIgnored are the request-level
+	// provider-object (RIC-3352) outcome, set once by the handler before
+	// execution and rendered into routing_trace.provider_prefs_*. Nil lists
+	// mean no preference object was present, so the trace omits them
+	// entirely (additive fields, no schema bump).
+	providerPrefsApplied []providerprefs.Field
+	providerPrefsIgnored []providerprefs.Field
 }
 
 // NewRouteInfoCollector builds a collector for one request. candidates is the
@@ -83,6 +91,21 @@ func NewRouteInfoCollector(candidates []string, routerRouted bool) *RouteInfoCol
 // the normalized model as a fallback when no route event carries a model.
 func NewRouteInfoCollectorWithModel(candidates []string, routerRouted bool, model string) *RouteInfoCollector {
 	return &RouteInfoCollector{candidates: candidates, routerRouted: routerRouted, model: model, startedAt: time.Now()}
+}
+
+// SetProviderPrefs records the request-level provider-object outcome (RIC-3352)
+// so routing_trace.provider_prefs_* renders it. Both lists may be nil (no
+// preference object): the trace then omits the fields entirely. It is a
+// one-shot set, safe to call before execution begins; concurrent reads during
+// trace rendering take the lock.
+func (c *RouteInfoCollector) SetProviderPrefs(applied, ignored []providerprefs.Field) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.providerPrefsApplied = applied
+	c.providerPrefsIgnored = ignored
 }
 
 // ReportEvent records one routing attempt. Safe for concurrent use.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallback"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -52,6 +53,12 @@ type fallbackBridge struct {
 	// the Policy for a request (the chain is per-request: the preferred
 	// provider varies with the model).
 	config fallback.Config
+	// LatencyRecorder folds one engine attempt's wall latency into the
+	// in-process provider-latency window (RIC-3352 option A), so a later
+	// request's sort:"latency" ranks providers on measured, not guessed,
+	// data. nil disables recording (default before the window is installed).
+	// It must be safe for concurrent use (the window is).
+	LatencyRecorder func(provider string, totalMS int64)
 }
 
 // newFallbackBridge builds a bridge from the declarative config. A disabled
@@ -96,6 +103,7 @@ func (b *fallbackBridge) execute(
 	req coreexecutor.Request,
 	opts coreexecutor.Options,
 	underlying func(context.Context, []string, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error),
+	reqOpts fallback.RequestOptions,
 ) (coreexecutor.Response, fallbackAttempt, error) {
 	if b == nil {
 		resp, err := underlying(ctx, providers, req, opts)
@@ -109,11 +117,13 @@ func (b *fallbackBridge) execute(
 		return resp, fallbackAttempt{}, err
 	}
 	var attemptResp coreexecutor.Response
-	out := b.orchestrator.Run(ctx, req.Model, fallback.RequestOptions{}, func(attemptCtx context.Context, provider, model string) error {
+	out := b.orchestrator.Run(ctx, req.Model, reqOpts, func(attemptCtx context.Context, provider, model string) error {
 		attemptReq := req
 		attemptReq.Model = model
 		attemptOpts := cloneCoreOptions(opts)
+		attemptStart := time.Now()
 		resp, err := underlying(attemptCtx, []string{provider}, attemptReq, attemptOpts)
+		b.recordAttemptLatency(provider, time.Since(attemptStart))
 		if err != nil {
 			return fallbackProviderError(provider, err)
 		}
@@ -140,6 +150,7 @@ func (b *fallbackBridge) executeStream(
 	req coreexecutor.Request,
 	opts coreexecutor.Options,
 	underlying func(context.Context, []string, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error),
+	reqOpts fallback.RequestOptions,
 ) (*coreexecutor.StreamResult, fallbackAttempt, error) {
 	if b == nil {
 		result, err := underlying(ctx, providers, req, opts)
@@ -151,11 +162,13 @@ func (b *fallbackBridge) executeStream(
 		return result, fallbackAttempt{}, err
 	}
 	var attemptStream *coreexecutor.StreamResult
-	out := b.orchestrator.Run(ctx, req.Model, fallback.RequestOptions{}, func(attemptCtx context.Context, provider, model string) error {
+	out := b.orchestrator.Run(ctx, req.Model, reqOpts, func(attemptCtx context.Context, provider, model string) error {
 		attemptReq := req
 		attemptReq.Model = model
 		attemptOpts := cloneCoreOptions(opts)
+		attemptStart := time.Now()
 		result, err := underlying(attemptCtx, []string{provider}, attemptReq, attemptOpts)
+		b.recordAttemptLatency(provider, time.Since(attemptStart))
 		if err != nil {
 			return fallbackProviderError(provider, err)
 		}
@@ -225,6 +238,12 @@ func (b *fallbackBridge) policyFor(providers []string) fallback.Policy {
 	}
 	return p
 }
+
+// The request-level provider-preference switches (RIC-3352 allow_fallbacks +
+// max_price) travel on the fallback.RequestOptions handed to
+// orchestrator.Run, which folds them into a per-run copy of the policy. The
+// bridge's local policyFor(providers) result is not what Run walks, so the
+// bridge adds no policy mutation of its own.
 
 // normalizeProviderPool lowercases and deduplicates a provider pool.
 func normalizeProviderPool(providers []string) []string {
@@ -462,4 +481,26 @@ func (s *fallbackOutcomeState) attachToHeaders(headers http.Header) http.Header 
 // given config block. It is the gate the production builder checks.
 func fallbackBridgeEnabled(cfg fallback.Config, enabled bool) bool {
 	return enabled && len(cfg.Providers) > 0
+}
+
+// SetLatencyRecorder installs the in-process latency-window recorder (RIC-3352
+// option A) so the bridge folds each engine attempt's wall latency into the
+// provider-latency window. A nil recorder disables recording and the bridge
+// keeps running (the window simply stays cold). It is a separate seam from
+// newFallbackBridge so the window can be installed after the bridge is built.
+func (b *fallbackBridge) SetLatencyRecorder(rec func(provider string, totalMS int64)) {
+	if b == nil {
+		return
+	}
+	b.LatencyRecorder = rec
+}
+
+// recordAttemptLatency folds one completed attempt into the latency window.
+// It is a no-op when no recorder is installed (the default build, before the
+// window wiring lands).
+func (b *fallbackBridge) recordAttemptLatency(provider string, total time.Duration) {
+	if b == nil || b.LatencyRecorder == nil || total <= 0 {
+		return
+	}
+	b.LatencyRecorder(provider, total.Milliseconds())
 }

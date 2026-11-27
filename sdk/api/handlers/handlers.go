@@ -332,6 +332,21 @@ type RouteBoundaryGate interface {
 	// a credential-availability one, in which case the caller keeps the
 	// original error.
 	TranslateExecutionError(ctx context.Context, execErr error, modelName string) *interfaces.ErrorMessage
+	// BoundaryFor returns the caller's delivered provider allow-list and
+	// whether a boundary is in force (allow-list nil when it is not). A
+	// request-level provider preference may narrow the pool against this
+	// allow-list but never widen it (RIC-3352 security-priority rule).
+	// The signature returns plain values (not the enforcer's Boundary type)
+	// so this interface can be faked without an internal/routeboundary
+	// import cycle.
+	BoundaryFor(ctx context.Context) (allowList []string, constrains bool)
+	// ProviderPrefsViolation returns the 403/503 route_boundary_violation
+	// verdict for a request-level provider preference the KEEPER boundary
+	// forbids (RIC-3352): outside are the client-named (only/order)
+	// providers not in the caller's allow-list; a non-empty outside is the
+	// 403 "not within the route boundary", an empty outside is the scenario-2
+	// 503. modelName is the normalized model, used in the 503 message.
+	ProviderPrefsViolation(ctx context.Context, outside []string, modelName string) *interfaces.ErrorMessage
 }
 
 type BaseAPIHandler struct {
@@ -357,6 +372,14 @@ type BaseAPIHandler struct {
 	// provider fallback engine (RIC-3143). Nil leaves the gateway's existing
 	// credential-level failover as the only behavior.
 	FallbackBridge *fallbackBridge
+
+	// ProviderPrefsLatency optionally supplies the in-window latency used to
+	// rank request-level provider preferences (RIC-3352 sort:"latency" and
+	// preferred_max_latency). Nil disables latency ranking: a latency sort
+	// degrades to the existing static order and is recorded as
+	// latency_source_empty in routing_trace. The source is installed through
+	// the builder's latency-window wiring and records every completed attempt.
+	ProviderPrefsLatency ProviderPrefsLatencySource
 
 	// ModelRoutingGate optionally resolves the request-level model routing
 	// strategy and picks the model to execute (RIC-3351). Nil leaves model
@@ -452,6 +475,20 @@ func (h *BaseAPIHandler) SetFallbackEngine(cfg fallback.Config, enabled bool) (i
 	}
 	h.FallbackBridge = bridge
 	return bridge != nil, nil
+}
+
+// SetProviderPrefsLatency installs the in-process latency window used to rank
+// request-level provider preferences (RIC-3352 sort:"latency" and
+// preferred_max_latency). A nil source disables latency ranking: a latency
+// sort degrades to the existing static order and is recorded as
+// latency_source_empty in routing_trace. Installing the bridge's attempt
+// recorder (the window fed by completed fallback attempts) is the caller's
+// job, so this setter stays dependency-free on the concrete window type.
+func (h *BaseAPIHandler) SetProviderPrefsLatency(src ProviderPrefsLatencySource) {
+	if h == nil {
+		return
+	}
+	h.ProviderPrefsLatency = src
 }
 
 func isNilPluginInterceptorHost(host PluginInterceptorHost) bool {
