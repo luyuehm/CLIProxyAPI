@@ -281,6 +281,48 @@ routing-trace:
   # logged or echoed.
   full-trace-api-keys: []
 
+# Request-level model routing strategy engine (RIC-3351).
+# Wires the already-delivered internal/modelrouting engine (RIC-2522 schema +
+# immutable versions + daily KEEPER price cache, RIC-2524 decision engine) into
+# the request path. When enabled, each routed request resolves the strategy in
+# force for the caller (per-scope version, else default-strategy, else the
+# built-in default), picks a model from the KEEPER price snapshot, and reports
+# the decision through the x-or-model / x-or-reason response headers plus one
+# structured decision log line. The per-request cost cap returns 402
+# budget_exceeded and a forced-unavailable model returns 503 model_unavailable
+# before any upstream call.
+#
+# An empty or disabled block installs no gate, starts no price-sync goroutine
+# and exposes no /routing/policies route: the default build routes exactly as
+# before. When enabled but the price cache is empty (KEEPER unreachable, not
+# yet synced, or no keeper-url), requests pass through unchanged and
+# x-or-reason reports route_passthrough:no_price_snapshot — routing never turns
+# a KEEPER outage into a request outage.
+model-routing:
+  enabled: false # default: false (disabled)
+  # KEEPER control-plane base URL for the daily price sync. Falls back to
+  # CPA_MODEL_ROUTING_KEEPER_URL when empty. With no source the price cache
+  # stays empty and requests pass through unchanged.
+  keeper-url: ""
+  # Shared X-CPA-Management-Key for the price pull. Prefer
+  # CPA_MODEL_ROUTING_KEEPER_KEY (or CPA_CONTENT_FILTER_AUDIT_KEEPER_KEY) over
+  # writing the shared secret here.
+  # management-key: ""
+  sync-interval: 24h # price sync period; default 24h
+  # Durable store for the per-scope strategy version history written by
+  # POST /v0/management/routing/policies. Records are preserved verbatim, so a
+  # restart keeps both the policies and their audit trail. Empty = in memory
+  # only (policies do not survive a restart).
+  state-path: ""
+  # Strategy applied to a scope with no appended version. Omit the block to
+  # keep the engine's built-in default (balanced, no floor, no cap).
+  default-strategy:
+    optimization: min_cost # min_cost | balanced | high_quality
+    quality-floor: 0.6 # [0,1] minimum heuristic quality score
+    # max-budget: 0.01 # optional hard USD cap per request; omit for no cap
+    preferred-model: "" # optional tie-breaker when two candidates cost the same
+    only-allow-model: "" # optional hard pin to exactly this model
+
 # Codex provider behavior.
 codex:
   # When true, and routing.strategy is fill-first or routing.session-affinity is true,

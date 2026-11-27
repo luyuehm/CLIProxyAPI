@@ -1385,6 +1385,34 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	return result
 }
 
+// HasModelProvider reports whether GetModelProviders would return at least one
+// provider for modelID, without building the sorted provider slice.
+//
+// It exists for hot paths that only ask "can this gateway serve this model at
+// all?" — notably the request-level routing gate, which must test every priced
+// model on every request. The semantics are exactly GetModelProviders's first
+// guards plus its per-provider count filter (a provider registered with a
+// non-positive count is not serving), so callers can swap one for the other
+// without changing which models are considered servable.
+func (r *ModelRegistry) HasModelProvider(modelID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	registration, exists := r.models[modelID]
+	if !exists || registration == nil || len(registration.Providers) == 0 {
+		return false
+	}
+	for _, count := range registration.Providers {
+		if count > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // GetModelInfo returns ModelInfo, prioritizing provider-specific definition if available.
 func (r *ModelRegistry) GetModelInfo(modelID, provider string) *ModelInfo {
 	r.mutex.RLock()

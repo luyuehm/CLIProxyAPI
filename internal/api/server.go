@@ -104,6 +104,12 @@ type Server struct {
 	// disabled; the audit routes then report 404.
 	auditChainHandler gin.HandlerFunc
 
+	// modelRoutingGetPolicies / modelRoutingPostPolicies are the RIC-3351
+	// strategy-object endpoints, injected via WithModelRoutingHandlers. nil
+	// when the channel is disabled; the routes are then not mounted at all.
+	modelRoutingGetPolicies  gin.HandlerFunc
+	modelRoutingPostPolicies gin.HandlerFunc
+
 	// pluginHost owns dynamic plugin Management API route dispatch.
 	pluginHost *pluginhost.Host
 
@@ -210,6 +216,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		contentFilterExportHandler:   optionState.contentFilterExportHandler,
 		arbitrageStatusHandler:       optionState.arbitrageStatusHandler,
 		auditChainHandler:            optionState.auditChainHandler,
+		modelRoutingGetPolicies:      optionState.modelRoutingGetPolicies,
+		modelRoutingPostPolicies:     optionState.modelRoutingPostPolicies,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))

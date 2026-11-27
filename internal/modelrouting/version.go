@@ -135,6 +135,75 @@ func (t *ScopeTable) List(scope Scope) []Version {
 	return out
 }
 
+// Restore rehydrates a scope's history from records read back from a durable
+// store. It exists so a restart does not silently drop every configured
+// strategy and its audit trail: the restored table is indistinguishable from
+// the one that was persisted — version numbers, timestamps and notes are
+// preserved verbatim, no clock is consulted.
+//
+// Restore is a load-path primitive, not a mutation path:
+//
+//   - it refuses a scope that already holds records, so a bad or duplicated
+//     load can never rewrite live history;
+//   - it requires each record to validate and to carry a strictly increasing
+//     version number and timestamp, so a corrupted store is rejected instead
+//     of being absorbed into the history. Numbers must also be CONTIGUOUS
+//     (v1, v2, v3 …): Update only ever appends last+1, so a gap means a record
+//     was dropped, which is corruption rather than retention.
+//   - it applies the same FIFO retention cap as Update, without mutating the
+//     surviving records.
+//
+// Contiguity is the strongest check a load path can make without a key: it
+// detects a dropped record, but not an in-place edit of a record's strategy or
+// note. That residue is why the persisted file is documented as a restart
+// store rather than a tamper-evident ledger.
+func (t *ScopeTable) Restore(scope Scope, records []Version) error {
+	if scope.Kind == "" || scope.ID == "" {
+		return fmt.Errorf("modelrouting: scope requires kind and id")
+	}
+	if t == nil {
+		return fmt.Errorf("modelrouting: restore on a nil table")
+	}
+	restored := make([]Version, 0, len(records))
+	var lastVersion int64
+	var lastTimestamp time.Time
+	for index, record := range records {
+		if err := Validate(record.Strategy); err != nil {
+			return fmt.Errorf("modelrouting: restore %s record %d: %w", key(scope), index, err)
+		}
+		// The first restored record may start above 1 when FIFO retention has
+		// already evicted the oldest records; after that every step is +1.
+		if index > 0 && record.Version != lastVersion+1 {
+			return fmt.Errorf("modelrouting: restore %s: version %d does not follow %d (history has a gap)",
+				key(scope), record.Version, lastVersion)
+		}
+		if index == 0 && record.Version < 1 {
+			return fmt.Errorf("modelrouting: restore %s: version %d must be positive",
+				key(scope), record.Version)
+		}
+		if !record.Timestamp.After(lastTimestamp) {
+			return fmt.Errorf("modelrouting: restore %s: timestamp of version %d does not advance",
+				key(scope), record.Version)
+		}
+		lastVersion = record.Version
+		lastTimestamp = record.Timestamp
+		restored = append(restored, record)
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	existing := t.byScope[key(scope)]
+	if len(existing) > 0 {
+		return fmt.Errorf("modelrouting: restore %s: scope already holds %d records",
+			key(scope), len(existing))
+	}
+	if len(restored) > maxVersions {
+		restored = restored[len(restored)-maxVersions:]
+	}
+	t.byScope[key(scope)] = restored
+	return nil
+}
+
 // Get returns one version by its record number. ok=false means the number
 // was never recorded for the scope, or it was already evicted FIFO.
 func (t *ScopeTable) Get(scope Scope, version int64) (Version, bool) {
@@ -161,10 +230,29 @@ func (t *ScopeTable) Effective(scope Scope) (Strategy, bool, string) {
 	if t == nil {
 		return DefaultStrategy(), false, DefaultReason()
 	}
-	versions := t.List(scope)
-	if len(versions) == 0 {
+	latest, ok := t.Latest(scope)
+	if !ok {
 		return DefaultStrategy(), false, DefaultReason()
 	}
-	latest := versions[len(versions)-1]
 	return latest.Strategy, true, fmt.Sprintf("strategy v%d in force", latest.Version)
+}
+
+// Latest returns the scope's newest record without copying the history. ok is
+// false for a scope with no recorded version, in which case the built-in
+// default applies.
+//
+// Callers that need both the in-force strategy and its version number must use
+// this single lookup rather than Effective followed by List: a concurrent
+// Update between the two would attribute a decision made under vN to v(N+1).
+func (t *ScopeTable) Latest(scope Scope) (Version, bool) {
+	if t == nil {
+		return Version{}, false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	entries := t.byScope[key(scope)]
+	if len(entries) == 0 {
+		return Version{}, false
+	}
+	return entries[len(entries)-1], true
 }
