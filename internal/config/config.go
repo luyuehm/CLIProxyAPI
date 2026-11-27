@@ -182,4 +182,11 @@ type Config struct {
 	// empty block disables the engine entirely (the default), leaving the
 	// gateway's existing credential-level failover as the only behavior.
 	Fallback FallbackConfig `yaml:"fallback" json:"fallback"`
+	// ModelRouting configures the request-level model routing strategy engine
+	// (RIC-3351). It wires the already-delivered internal/modelrouting engine
+	// (RIC-2522/2524/2525) into the request path. An empty block or
+	// enabled:false disables the channel entirely (the default): no gate is
+	// installed, no price-sync goroutine starts, and every request routes
+	// exactly as before.
+	ModelRouting ModelRoutingConfig `yaml:"model-routing" json:"model-routing"`
 }

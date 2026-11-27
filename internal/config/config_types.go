@@ -914,3 +914,74 @@ type ShadowCanaryConfig struct {
 	UserIDHeader string            `yaml:"user-id-header,omitempty" json:"user-id-header,omitempty"`
 	UserIDs      []string          `yaml:"user-ids,omitempty" json:"user-ids,omitempty"`
 }
+
+// ModelRoutingConfig configures the request-level model routing strategy
+// engine (RIC-3351). The engine itself — the frozen Strategy schema, the
+// immutable per-scope version history, the daily KEEPER price cache and the
+// decision engine — was delivered by RIC-2522 / RIC-2524 / RIC-2525; this
+// block only wires it into the request path.
+//
+// When enabled, every routed request resolves the strategy in force for the
+// caller, picks a model from the KEEPER price snapshot, and reports the
+// decision through the x-or-model / x-or-reason response headers plus one
+// structured decision log line. The per-request cost cap (402) and the
+// forced-model rule (503) are enforced before any upstream call.
+//
+// An empty block or enabled:false disables the channel (the default): no gate
+// is installed on the request path, no price-sync goroutine starts, and every
+// request routes exactly as before.
+type ModelRoutingConfig struct {
+	// Enabled toggles the model routing engine. false disables it even when
+	// the remaining fields are set.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// KeeperURL is the KEEPER control-plane base URL for the daily price
+	// sync (e.g. http://keeper:8080/keeper). When empty the price cache stays
+	// empty and the gate passes requests through unchanged: no price snapshot
+	// means no routing decision, never a silently rejected request. The
+	// CPA_MODEL_ROUTING_KEEPER_URL environment variable is used as a fallback.
+	KeeperURL string `yaml:"keeper-url,omitempty" json:"keeper_url,omitempty"`
+
+	// ManagementKey is the shared X-CPA-Management-Key used to authenticate
+	// the price pull. Prefer the CPA_MODEL_ROUTING_KEEPER_KEY or
+	// CPA_CONTENT_FILTER_AUDIT_KEEPER_KEY environment variable over writing
+	// the shared secret into the config file; it is never serialized back out
+	// (json:"-").
+	ManagementKey string `yaml:"management-key,omitempty" json:"-"`
+
+	// SyncInterval is the price sync period. Accepts Go duration strings
+	// ("24h", "1h"). Empty defaults to the engine's daily interval.
+	SyncInterval string `yaml:"sync-interval,omitempty" json:"sync_interval,omitempty"`
+
+	// DefaultStrategy is the strategy the gate applies to a scope that has no
+	// appended version. Empty keeps the engine's built-in default (balanced
+	// optimization, no quality floor, no budget cap).
+	DefaultStrategy *ModelRoutingStrategyConfig `yaml:"default-strategy,omitempty" json:"default_strategy,omitempty"`
+
+	// StatePath is the durable store for the per-scope strategy version
+	// history written by POST /routing/policies. Records are preserved
+	// verbatim (version, timestamp, note, snapshot), so a restart keeps both
+	// the configured policies and their audit trail.
+	//
+	// Empty (the default) keeps the history in memory only: policies then do
+	// not survive a restart. Set it in any deployment where the management
+	// API is used.
+	StatePath string `yaml:"state-path,omitempty" json:"state_path,omitempty"`
+}
+
+// ModelRoutingStrategyConfig is the declarative form of
+// modelrouting.Strategy. The field names mirror the frozen JSON contract the
+// management API and the decision engine consume, so the config block and the
+// POST /routing/policies body stay in one vocabulary.
+type ModelRoutingStrategyConfig struct {
+	// Optimization is one of min_cost, balanced or high_quality.
+	Optimization string `yaml:"optimization" json:"optimization"`
+	// QualityFloor is the minimum heuristic quality score, in [0,1].
+	QualityFloor float64 `yaml:"quality-floor" json:"quality_floor"`
+	// MaxBudget is an optional hard USD cap per request. Nil means "no cap".
+	MaxBudget *float64 `yaml:"max-budget,omitempty" json:"max_budget,omitempty"`
+	// PreferredModel is the tie-breaker used when two candidates cost the same.
+	PreferredModel string `yaml:"preferred-model,omitempty" json:"preferred_model,omitempty"`
+	// OnlyAllowModel, when set, restricts routing to exactly this model.
+	OnlyAllowModel string `yaml:"only-allow-model,omitempty" json:"only_allow_model,omitempty"`
+}

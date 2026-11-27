@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/arbitrage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelroutingruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/routeboundary"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/tracer"
@@ -75,6 +76,12 @@ type Service struct {
 	// consumer (internal/routeboundary). Nil when the channel is disabled,
 	// in which case the gateway routes exactly as an unconfigured build.
 	routeBoundaryRuntime *routeboundary.Runtime
+
+	// modelRoutingRuntime is the RIC-3351 request-level model routing channel
+	// (internal/modelrouting). Nil when the channel is disabled, in which case
+	// no gate is installed, no price-sync goroutine runs and the request path
+	// is exactly the default build's.
+	modelRoutingRuntime *modelroutingruntime.Runtime
 
 	// server is the HTTP API server instance.
 	server *api.Server

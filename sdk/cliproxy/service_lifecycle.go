@@ -75,6 +75,14 @@ func (s *Service) Run(ctx context.Context) error {
 		log.Info("routeboundary: KEEPER boundary puller started")
 	}
 
+	// RIC-3351: start the model-routing daily price sync so the routing gate
+	// has a price snapshot. Nil when the channel is disabled, so a default
+	// build starts no goroutine. The start (and its own log line) happens
+	// off-path inside the runtime, so a slow KEEPER cannot delay readiness.
+	if s.modelRoutingRuntime != nil {
+		s.modelRoutingRuntime.Start()
+	}
+
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
@@ -272,6 +280,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		if s.routeBoundaryRuntime != nil {
 			s.routeBoundaryRuntime.Stop()
 			s.routeBoundaryRuntime = nil
+		}
+
+		// RIC-3351: stop the model-routing price sync loop so a restart or a
+		// test teardown never leaks the background goroutine.
+		if s.modelRoutingRuntime != nil {
+			s.modelRoutingRuntime.Stop()
+			s.modelRoutingRuntime = nil
 		}
 
 		s.homeLifecycleMu.Lock()

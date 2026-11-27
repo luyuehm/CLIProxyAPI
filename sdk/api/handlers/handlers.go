@@ -380,6 +380,11 @@ type BaseAPIHandler struct {
 	// latency_source_empty in routing_trace. The source is installed through
 	// the builder's latency-window wiring and records every completed attempt.
 	ProviderPrefsLatency ProviderPrefsLatencySource
+
+	// ModelRoutingGate optionally resolves the request-level model routing
+	// strategy and picks the model to execute (RIC-3351). Nil leaves model
+	// resolution exactly as before (the default build).
+	ModelRoutingGate ModelRoutingGate
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.

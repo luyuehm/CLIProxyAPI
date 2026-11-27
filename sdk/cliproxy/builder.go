@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/contentfilter"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/dataratelimit"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/fallbackruntime"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelroutingruntime"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/policies"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/routeboundary"
@@ -406,6 +407,19 @@ func (b *Builder) Build() (*Service, error) {
 	// the static order, recorded in routing_trace — never blocked.
 	if ppOpt := fallbackruntime.ProviderPrefsOption(b.cfg); ppOpt != nil {
 		service.serverOptions = append(service.serverOptions, ppOpt)
+	}
+	// RIC-3351: request-level model routing strategy (internal/modelrouting,
+	// delivered by RIC-2522/2524/2525). Reads the model-routing config block,
+	// builds the engine runtime, and installs the routing gate on the handler
+	// plus the GET/POST /v0/management/routing/policies strategy-object
+	// endpoints. Disabled or an empty block builds nothing, so the default
+	// build routes exactly as before and starts no price-sync goroutine.
+	service.modelRoutingRuntime = modelroutingruntime.Build(b.cfg)
+	if mrOpt := modelroutingruntime.ServerOption(service.modelRoutingRuntime); mrOpt != nil {
+		service.serverOptions = append(service.serverOptions, mrOpt)
+	}
+	if mrHandlersOpt := modelroutingruntime.HandlersServerOption(service.modelRoutingRuntime); mrHandlersOpt != nil {
+		service.serverOptions = append(service.serverOptions, mrHandlersOpt)
 	}
 	return service, nil
 }

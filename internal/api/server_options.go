@@ -42,6 +42,13 @@ type serverOptionConfig struct {
 	// registered inside the authenticated /v0/management group so unauthenticated
 	// callers are answered 401/403 before any record content can leak.
 	auditChainHandler gin.HandlerFunc
+	// modelRoutingGetPolicies / modelRoutingPostPolicies are the RIC-3351
+	// strategy-object endpoints. They are injected by
+	// internal/modelroutingruntime (which imports this package) and registered
+	// inside the authenticated /v0/management group, so the routing policy
+	// surface inherits the standard management-key auth.
+	modelRoutingGetPolicies  gin.HandlerFunc
+	modelRoutingPostPolicies gin.HandlerFunc
 }
 
 // ServerOption customises HTTP server construction.
@@ -104,6 +111,17 @@ func WithArbitrageStatusHandler(h gin.HandlerFunc) ServerOption {
 func WithAuditChainHandler(h gin.HandlerFunc) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.auditChainHandler = h
+	}
+}
+
+// WithModelRoutingHandlers injects the RIC-3351 strategy-object endpoints
+// (GET/POST /v0/management/routing/policies). They are registered inside the
+// authenticated /v0/management group; without handlers (channel disabled) the
+// routes are not mounted at all.
+func WithModelRoutingHandlers(get, post gin.HandlerFunc) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.modelRoutingGetPolicies = get
+		cfg.modelRoutingPostPolicies = post
 	}
 }
 
